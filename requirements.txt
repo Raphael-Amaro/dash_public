@@ -1,0 +1,12 @@
+dash
+pandas
+plotly
+pygwalker
+requests
+msal
+python-dotenv
+openpyxl
+geobr
+gunicorn
+werkzeug
+flask
