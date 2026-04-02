@@ -42,7 +42,12 @@ SHAREPOINT_SITE_PATH = os.environ["SHAREPOINT_SITE_PATH"]
 SHAREPOINT_FILE_PATH = os.environ["SHAREPOINT_FILE_PATH"]
 
 FLASK_SECRET_KEY = os.environ["FLASK_SECRET_KEY"]
-APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:8050").rstrip("/")
+
+raw_app_base_url = os.getenv("APP_BASE_URL", "http://localhost:8050").strip()
+if raw_app_base_url.startswith("http://") or raw_app_base_url.startswith("https://"):
+    APP_BASE_URL = raw_app_base_url.rstrip("/")
+else:
+    APP_BASE_URL = f"https://{raw_app_base_url}".rstrip("/")
 
 SCOPES = [
     "User.Read",
@@ -271,7 +276,7 @@ def build_redirect_uri() -> str:
 
 
 def build_logout_redirect_uri() -> str:
-    return f"{APP_BASE_URL}/"
+    return APP_BASE_URL
 
 
 def build_authority() -> str:
@@ -584,6 +589,7 @@ def fmt_bi(v: float) -> str:
 
 
 # ── CONSTRUTORES DE GRÁFICOS ──────────────────────────────────────────────────
+
 
 def _gradient(base_rgb: tuple, n: int, lo=0.35, hi=0.95) -> list[str]:
     return [COLOR_SEQUENCE[i % len(COLOR_SEQUENCE)] for i in range(n)]
@@ -1367,7 +1373,7 @@ def auth_status_card() -> html.Div:
             *[
                 html.Div(
                     className="section-header",
-                    style={"marginBottom": "10px"},
+                    style={"marginBottom": "12px"},
                     children=[
                         html.Div(
                             [
@@ -1382,15 +1388,16 @@ def auth_status_card() -> html.Div:
                 ),
                 html.Div(
                     style={
+                        "padding": "18px 20px",
+                        "borderRadius": "16px",
+                        "background": "linear-gradient(135deg, rgba(201,168,76,0.18), rgba(29,60,105,0.10))",
+                        "border": "1px solid rgba(201,168,76,0.45)",
+                        "boxShadow": "0 14px 34px rgba(29,60,105,0.10)",
                         "display": "flex",
                         "justifyContent": "space-between",
                         "alignItems": "center",
                         "gap": "16px",
                         "flexWrap": "wrap",
-                        "padding": "10px 14px",
-                        "borderRadius": "14px",
-                        "background": "linear-gradient(135deg, rgba(201,168,76,0.12), rgba(29,60,105,0.08))",
-                        "border": "1px solid rgba(201,168,76,0.35)",
                     },
                     children=[
                         html.Div(
@@ -1410,7 +1417,7 @@ def auth_status_card() -> html.Div:
         *[
             html.Div(
                 className="section-header",
-                style={"marginBottom": "10px"},
+                style={"marginBottom": "12px"},
                 children=[
                     html.Div(
                         [
@@ -1425,26 +1432,28 @@ def auth_status_card() -> html.Div:
             ),
             html.Div(
                 style={
-                    "padding": "18px",
-                    "borderRadius": "16px",
-                    "background": "linear-gradient(135deg, rgba(201,168,76,0.16), rgba(29,60,105,0.08))",
-                    "border": "1px solid rgba(201,168,76,0.45)",
+                    "padding": "24px",
+                    "borderRadius": "18px",
+                    "background": "linear-gradient(135deg, rgba(201,168,76,0.20), rgba(29,60,105,0.10))",
+                    "border": "1px solid rgba(201,168,76,0.55)",
                     "display": "flex",
                     "justifyContent": "space-between",
                     "alignItems": "center",
-                    "gap": "16px",
+                    "gap": "20px",
                     "flexWrap": "wrap",
-                    "boxShadow": "0 10px 30px rgba(29,60,105,0.08)",
+                    "boxShadow": "0 16px 40px rgba(29,60,105,0.12)",
                 },
                 children=[
                     html.Div(
-                        [
+                        style={"maxWidth": "650px"},
+                        children=[
                             html.Div("Acesso protegido", className="section-title"),
                             html.Div(
-                                "A autenticação é obrigatória antes de exibir qualquer conteúdo da aplicação.",
+                                "Esta aplicação utiliza login Microsoft para liberar o acesso ao arquivo no SharePoint. "
+                                "Enquanto a autenticação não for concluída, nenhum conteúdo da aplicação será exibido.",
                                 className="section-subtitle",
                             ),
-                        ]
+                        ],
                     ),
                     html.A("Entrar com Microsoft", href="/login", className="btn btn-primary"),
                 ],
@@ -1456,8 +1465,18 @@ def auth_status_card() -> html.Div:
 def unauthenticated_page_layout() -> html.Div:
     return html.Div(
         className="page-wrap fade-in",
+        style={
+            "minHeight": "100vh",
+            "display": "flex",
+            "alignItems": "flex-start",
+            "justifyContent": "center",
+            "paddingTop": "40px",
+        },
         children=[
-            auth_status_card(),
+            html.Div(
+                style={"width": "100%", "maxWidth": "980px"},
+                children=[auth_status_card()],
+            )
         ],
     )
 
@@ -1682,7 +1701,9 @@ server = app.server
 server.secret_key = FLASK_SECRET_KEY
 server.config["SESSION_COOKIE_HTTPONLY"] = True
 server.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-server.wsgi_app = ProxyFix(server.wsgi_app, x_proto=1, x_host=1)
+server.config["PREFERRED_URL_SCHEME"] = "https"
+server.config["SESSION_COOKIE_SECURE"] = APP_BASE_URL.startswith("https://")
+server.wsgi_app = ProxyFix(server.wsgi_app, x_proto=1, x_host=1, x_port=1)
 
 app.layout = html.Div(
     className="app-shell",
@@ -1747,6 +1768,7 @@ app.layout = html.Div(
 
 # ── ROTAS DE AUTENTICAÇÃO ─────────────────────────────────────────────────────
 
+
 @server.route("/login")
 def login():
     msal_app = build_msal_app()
@@ -1804,6 +1826,7 @@ def home_redirect():
 
 
 # ── CALLBACKS ─────────────────────────────────────────────────────────────────
+
 
 @callback(
     Output("sidebar", "className"),
@@ -2025,6 +2048,7 @@ def export_selected_columns(n_clicks, df_json, selected, filename):
 
 # ── CALLBACKS DO DROPDOWN DE COLUNAS DA ABA OPERAÇÕES ────────────────────────
 
+
 @callback(
     Output("carteira-operacoes-selected-columns", "data"),
     Input("carteira-operacoes-column-selector", "value"),
@@ -2069,6 +2093,7 @@ def update_carteira_operacoes_selected_count(options, selected):
 
 
 # ── CALLBACKS DA PÁGINA PAINEL ────────────────────────────────────────────────
+
 
 @callback(
     Output("carteira-select-de_fase", "value"),
@@ -2348,4 +2373,4 @@ def export_carteira_operacoes_excel(
 
 
 if __name__ == "__main__":
-    app.run(host="localhost", port=8050, debug=True, use_reloader=False)
+    app.run(host="0.0.0.0", port=8050, debug=True, use_reloader=False)
