@@ -10,3 +10,5 @@ geobr
 gunicorn
 werkzeug
 flask
+flask-caching
+pyarrow

@@ -18,6 +18,7 @@ from dash import Dash, Input, Output, State, callback, dash_table, dcc, html
 from dash.exceptions import PreventUpdate
 from dotenv import load_dotenv
 from flask import redirect, request, session
+from flask_caching import Cache
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from painel import painel_page_layout
@@ -42,12 +43,7 @@ SHAREPOINT_SITE_PATH = os.environ["SHAREPOINT_SITE_PATH"]
 SHAREPOINT_FILE_PATH = os.environ["SHAREPOINT_FILE_PATH"]
 
 FLASK_SECRET_KEY = os.environ["FLASK_SECRET_KEY"]
-
-raw_app_base_url = os.getenv("APP_BASE_URL", "http://localhost:8050").strip()
-if raw_app_base_url.startswith("http://") or raw_app_base_url.startswith("https://"):
-    APP_BASE_URL = raw_app_base_url.rstrip("/")
-else:
-    APP_BASE_URL = f"https://{raw_app_base_url}".rstrip("/")
+APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:8050").rstrip("/")
 
 SCOPES = [
     "User.Read",
@@ -63,6 +59,11 @@ CACHE_DIR = BASE_DIR / "cache"
 CACHE_DIR.mkdir(exist_ok=True)
 
 BR_UF_GEOJSON_PATH = CACHE_DIR / "br_states_geojson.json"
+PARQUET_CACHE_PATH = CACHE_DIR / "base_preparada.parquet"
+PARQUET_META_PATH = CACHE_DIR / "base_preparada_meta.json"
+
+BASE_MEMORY_CACHE_KEY = "base_preparada_json_v1"
+BASE_MEMORY_CACHE_TTL_SECONDS = 600
 
 # ── FORMATAÇÃO BRASILEIRA ─────────────────────────────────────────────────────
 
@@ -268,6 +269,23 @@ EMPTY_FIG.update_layout(
     ]
 )
 
+# ── APP / SERVER / CACHE ─────────────────────────────────────────────────────
+
+app = Dash(__name__, suppress_callback_exceptions=True, title="SEAID · COSID")
+server = app.server
+server.secret_key = FLASK_SECRET_KEY
+server.config["SESSION_COOKIE_HTTPONLY"] = True
+server.config["SESSION_COOKIE_SAMESITE"] = "Lax"
+server.wsgi_app = ProxyFix(server.wsgi_app, x_proto=1, x_host=1)
+
+cache = Cache(
+    server,
+    config={
+        "CACHE_TYPE": "SimpleCache",
+        "CACHE_DEFAULT_TIMEOUT": BASE_MEMORY_CACHE_TTL_SECONDS,
+    },
+)
+
 # ── AUTH / SHAREPOINT / GRAPH HELPERS ────────────────────────────────────────
 
 
@@ -276,7 +294,7 @@ def build_redirect_uri() -> str:
 
 
 def build_logout_redirect_uri() -> str:
-    return APP_BASE_URL
+    return f"{APP_BASE_URL}/"
 
 
 def build_authority() -> str:
@@ -397,7 +415,85 @@ def year_str(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def load_dataframe_from_sharepoint() -> pd.DataFrame:
+# ── CARGA OTIMIZADA DA BASE ───────────────────────────────────────────────────
+
+
+def preprocess_base_df(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+
+    df.columns = [str(c).strip() for c in df.columns]
+
+    df = date_date(df)
+    # df = year_str(df)
+
+    for col in ["vl_financiamento_dolar", "vl_contrapartida_dolar"]:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0).astype(float)
+
+    text_cols = [
+        "nm_setor",
+        "sg_fonte_resumo",
+        "de_fase",
+        "de_esfera",
+        "nm_regiao",
+        "sg_uf",
+        "de_tipo_operacao",
+        "nm_proponente",
+        "sg_fonte",
+        "nm_subsetor",
+        "sg_setor",
+        "sys",
+        "nm_limite",
+    ]
+
+    for col in text_cols:
+        if col in df.columns:
+            df[col] = (
+                df[col]
+                .astype("string")
+                .fillna("Não informado")
+                .replace(["<NA>", "nan", "None", ""], "Não informado")
+            )
+
+    return df
+
+
+def _save_parquet_metadata() -> None:
+    meta = {
+        "updated_at_epoch": time.time(),
+        "updated_at_iso": datetime.now().isoformat(),
+    }
+    PARQUET_META_PATH.write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _read_parquet_metadata() -> dict[str, Any] | None:
+    if not PARQUET_META_PATH.exists():
+        return None
+    try:
+        return json.loads(PARQUET_META_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _is_parquet_fresh(ttl_seconds: int = BASE_MEMORY_CACHE_TTL_SECONDS) -> bool:
+    if not PARQUET_CACHE_PATH.exists():
+        return False
+
+    meta = _read_parquet_metadata()
+    if not meta:
+        return False
+
+    updated_at = float(meta.get("updated_at_epoch", 0))
+    if updated_at <= 0:
+        return False
+
+    return (time.time() - updated_at) < ttl_seconds
+
+
+def download_and_prepare_base_df() -> pd.DataFrame:
     access_token = get_access_token_from_session()
     client = GraphSharePointClient(access_token=access_token)
 
@@ -408,10 +504,36 @@ def load_dataframe_from_sharepoint() -> pd.DataFrame:
     )
 
     df = pd.read_excel(BytesIO(raw))
-    df.columns = [str(c).strip() for c in df.columns]
-    df = date_date(df)
-    df = year_str(df)
+    df = preprocess_base_df(df)
+
+    df.to_parquet(PARQUET_CACHE_PATH, index=False)
+    _save_parquet_metadata()
+
     return df
+
+
+def load_prepared_base_df(force_refresh: bool = False) -> pd.DataFrame:
+    if not force_refresh and _is_parquet_fresh():
+        return pd.read_parquet(PARQUET_CACHE_PATH)
+
+    return download_and_prepare_base_df()
+
+
+def get_prepared_base_json(force_refresh: bool = False) -> str:
+    if not force_refresh:
+        cached_json = cache.get(BASE_MEMORY_CACHE_KEY)
+        if cached_json:
+            return cached_json
+
+    df = load_prepared_base_df(force_refresh=force_refresh)
+    df_json = df.to_json(date_format="iso", orient="split")
+    cache.set(BASE_MEMORY_CACHE_KEY, df_json, timeout=BASE_MEMORY_CACHE_TTL_SECONDS)
+    return df_json
+
+
+def load_dataframe_from_sharepoint(force_refresh: bool = False) -> pd.DataFrame:
+    df_json = get_prepared_base_json(force_refresh=force_refresh)
+    return pd.read_json(StringIO(df_json), orient="split")
 
 
 def filter_df_by_columns(df_json: str | None, selected: list | None) -> pd.DataFrame:
@@ -467,7 +589,7 @@ def prep_painel_df(df_json: str | None, ano_range: list) -> pd.DataFrame | None:
         return df
 
     df = date_date(df)
-    df = year_str(df)
+    # df = year_str(df)
 
     for col in ["vl_financiamento_dolar", "vl_contrapartida_dolar"]:
         if col in df.columns:
@@ -483,8 +605,12 @@ def prep_painel_df(df_json: str | None, ano_range: list) -> pd.DataFrame | None:
     }
     for col, default in text_defaults.items():
         if col in df.columns:
-            df[col] = df[col].astype("string")
-            df[col] = df[col].fillna(default).replace(["<NA>", "nan", "None", ""], default)
+            df[col] = (
+                df[col]
+                .astype("string")
+                .fillna(default)
+                .replace(["<NA>", "nan", "None", ""], default)
+            )
 
     col_ano = escolher_coluna_ano(df)
 
@@ -501,8 +627,12 @@ def prep_painel_df(df_json: str | None, ano_range: list) -> pd.DataFrame | None:
 
 def _normalize_text_col(df: pd.DataFrame, col: str, default: str = "Não informado") -> pd.DataFrame:
     if col in df.columns:
-        df[col] = df[col].astype("string")
-        df[col] = df[col].fillna(default).replace(["<NA>", "nan", "None", ""], default)
+        df[col] = (
+            df[col]
+            .astype("string")
+            .fillna(default)
+            .replace(["<NA>", "nan", "None", ""], default)
+        )
     return df
 
 
@@ -1373,7 +1503,7 @@ def auth_status_card() -> html.Div:
             *[
                 html.Div(
                     className="section-header",
-                    style={"marginBottom": "12px"},
+                    style={"marginBottom": "10px"},
                     children=[
                         html.Div(
                             [
@@ -1388,16 +1518,15 @@ def auth_status_card() -> html.Div:
                 ),
                 html.Div(
                     style={
-                        "padding": "18px 20px",
-                        "borderRadius": "16px",
-                        "background": "linear-gradient(135deg, rgba(201,168,76,0.18), rgba(29,60,105,0.10))",
-                        "border": "1px solid rgba(201,168,76,0.45)",
-                        "boxShadow": "0 14px 34px rgba(29,60,105,0.10)",
                         "display": "flex",
                         "justifyContent": "space-between",
                         "alignItems": "center",
                         "gap": "16px",
                         "flexWrap": "wrap",
+                        "padding": "10px 14px",
+                        "borderRadius": "14px",
+                        "background": "linear-gradient(135deg, rgba(201,168,76,0.12), rgba(29,60,105,0.08))",
+                        "border": "1px solid rgba(201,168,76,0.35)",
                     },
                     children=[
                         html.Div(
@@ -1417,7 +1546,7 @@ def auth_status_card() -> html.Div:
         *[
             html.Div(
                 className="section-header",
-                style={"marginBottom": "12px"},
+                style={"marginBottom": "10px"},
                 children=[
                     html.Div(
                         [
@@ -1432,28 +1561,26 @@ def auth_status_card() -> html.Div:
             ),
             html.Div(
                 style={
-                    "padding": "24px",
-                    "borderRadius": "18px",
-                    "background": "linear-gradient(135deg, rgba(201,168,76,0.20), rgba(29,60,105,0.10))",
-                    "border": "1px solid rgba(201,168,76,0.55)",
+                    "padding": "18px",
+                    "borderRadius": "16px",
+                    "background": "linear-gradient(135deg, rgba(201,168,76,0.16), rgba(29,60,105,0.08))",
+                    "border": "1px solid rgba(201,168,76,0.45)",
                     "display": "flex",
                     "justifyContent": "space-between",
                     "alignItems": "center",
-                    "gap": "20px",
+                    "gap": "16px",
                     "flexWrap": "wrap",
-                    "boxShadow": "0 16px 40px rgba(29,60,105,0.12)",
+                    "boxShadow": "0 10px 30px rgba(29,60,105,0.08)",
                 },
                 children=[
                     html.Div(
-                        style={"maxWidth": "650px"},
-                        children=[
+                        [
                             html.Div("Acesso protegido", className="section-title"),
                             html.Div(
-                                "Esta aplicação utiliza login Microsoft para liberar o acesso ao arquivo no SharePoint. "
-                                "Enquanto a autenticação não for concluída, nenhum conteúdo da aplicação será exibido.",
+                                "A autenticação é obrigatória antes de exibir qualquer conteúdo da aplicação.",
                                 className="section-subtitle",
                             ),
-                        ],
+                        ]
                     ),
                     html.A("Entrar com Microsoft", href="/login", className="btn btn-primary"),
                 ],
@@ -1465,19 +1592,7 @@ def auth_status_card() -> html.Div:
 def unauthenticated_page_layout() -> html.Div:
     return html.Div(
         className="page-wrap fade-in",
-        style={
-            "minHeight": "100vh",
-            "display": "flex",
-            "alignItems": "flex-start",
-            "justifyContent": "center",
-            "paddingTop": "40px",
-        },
-        children=[
-            html.Div(
-                style={"width": "100%", "maxWidth": "980px"},
-                children=[auth_status_card()],
-            )
-        ],
+        children=[auth_status_card()],
     )
 
 
@@ -1621,89 +1736,26 @@ def home_page_layout(df_json: str | None = None) -> html.Div:
 
 
 def bi_page_layout(df_json: str | None, selected: list | None, filename: str | None) -> html.Div:
-    header = html.Div(
-        className="page-header",
-        children=[
-            html.H1("Exploração Livre", className="page-title"),
-            html.P(
-                "Interface drag-and-drop para análises personalizadas sobre a base carregada.",
-                className="page-subtitle",
-            ),
-        ],
-    )
-
-    if not df_json:
-        return html.Div(
-            className="page-wrap fade-in",
-            children=[
-                auth_status_card(),
-                header,
-                _empty_state(
-                    "Base não carregada",
-                    "Acesse a página de Dados e carregue a base para habilitar o PyGWalker.",
-                ),
-            ],
-        )
-
-    df = filter_df_by_columns(df_json, selected)
-
-    if df.empty:
-        return html.Div(
-            className="page-wrap fade-in",
-            children=[
-                auth_status_card(),
-                header,
-                _empty_state(
-                    "Nenhuma coluna selecionada",
-                    "Volte para Dados e selecione pelo menos uma coluna.",
-                ),
-            ],
-        )
-
-    orig_df = pd.read_json(StringIO(df_json), orient="split")
-    rows, cols = len(df), len(df.columns)
-    orig_cols = len(orig_df.columns)
-    completeness = (df.notna().sum().sum() / (rows * cols) * 100) if rows * cols > 0 else 100.0
-    pyg_html = pyg.to_html(df, appearance="light")
-
     return html.Div(
         className="page-wrap fade-in",
         children=[
             auth_status_card(),
-            header,
             html.Div(
-                className="metrics-grid",
+                className="page-header",
                 children=[
-                    metric_card("Registros", fmt_int_br(rows), "linhas", ACCENT),
-                    metric_card("Colunas ativas", fmt_int_br(cols), f"de {fmt_int_br(orig_cols)}", BLUE),
-                    metric_card("Preenchimento", brazil_per(completeness, 1), "células não nulas", TEAL),
-                    metric_card("Arquivo ativo", filename or "base carregada", "", MUTED),
+                    html.H1("Exploração Livre", className="page-title"),
+                    html.P(
+                        "Interface drag-and-drop para análises personalizadas sobre a base carregada.",
+                        className="page-subtitle",
+                    ),
                 ],
             ),
-            glass_card(
-                *[
-                    section_head("PyGWalker", "Arraste campos para criar suas próprias visualizações"),
-                    dcc.Loading(
-                        type="circle",
-                        color=ACCENT,
-                        children=[html.Iframe(srcDoc=pyg_html, className="bi-iframe")],
-                    ),
-                ]
-            ),
+            html.Div(id="bi-lazy-container"),
         ],
     )
 
 
-# ── APP ───────────────────────────────────────────────────────────────────────
-
-app = Dash(__name__, suppress_callback_exceptions=True, title="SEAID · COSID")
-server = app.server
-server.secret_key = FLASK_SECRET_KEY
-server.config["SESSION_COOKIE_HTTPONLY"] = True
-server.config["SESSION_COOKIE_SAMESITE"] = "Lax"
-server.config["PREFERRED_URL_SCHEME"] = "https"
-server.config["SESSION_COOKIE_SECURE"] = APP_BASE_URL.startswith("https://")
-server.wsgi_app = ProxyFix(server.wsgi_app, x_proto=1, x_host=1, x_port=1)
+# ── APP LAYOUT ────────────────────────────────────────────────────────────────
 
 app.layout = html.Div(
     className="app-shell",
@@ -1882,6 +1934,64 @@ def toggle_data_sections(df_json):
 
 
 @callback(
+    Output("bi-lazy-container", "children"),
+    Input("url", "pathname"),
+    State("global-df-json", "data"),
+    State("global-selected-columns", "data"),
+    State("global-filename", "data"),
+)
+def render_bi_lazy_content(pathname, df_json, selected, filename):
+    if pathname != "/bi":
+        raise PreventUpdate
+
+    if not df_json:
+        return _empty_state(
+            "Base não carregada",
+            "Acesse a página de Dados e carregue a base para habilitar a Exploração Livre.",
+        )
+
+    df = filter_df_by_columns(df_json, selected)
+
+    if df.empty:
+        return _empty_state(
+            "Nenhuma coluna selecionada",
+            "Volte para Dados e selecione pelo menos uma coluna.",
+        )
+
+    orig_df = pd.read_json(StringIO(df_json), orient="split")
+    rows, cols = len(df), len(df.columns)
+    orig_cols = len(orig_df.columns)
+    completeness = (df.notna().sum().sum() / (rows * cols) * 100) if rows * cols > 0 else 100.0
+
+    pyg_html = pyg.to_html(df, appearance="light")
+
+    return [
+        html.Div(
+            className="metrics-grid",
+            children=[
+                metric_card("Registros", fmt_int_br(rows), "linhas na base", ACCENT),
+                metric_card("Colunas ativas", fmt_int_br(cols), f"de {fmt_int_br(orig_cols)}", BLUE),
+                metric_card("Preenchimento", brazil_per(completeness, 1), "células não nulas", TEAL),
+                metric_card("Arquivo ativo", filename or "base carregada", "", ROSE),
+            ],
+        ),
+        glass_card(
+            *[
+                section_head(
+                    "PyGWalker",
+                    "Carregado somente ao abrir esta aba, utilizando toda a base disponível.",
+                ),
+                dcc.Loading(
+                    type="circle",
+                    color=ACCENT,
+                    children=[html.Iframe(srcDoc=pyg_html, className="bi-iframe")],
+                ),
+            ]
+        ),
+    ]
+
+
+@callback(
     Output("global-df-json", "data"),
     Output("global-filename", "data"),
     Output("status-box", "children"),
@@ -1916,12 +2026,18 @@ def load_shared_file(n_clicks):
         )
 
     try:
-        df = load_dataframe_from_sharepoint()
+        df_json = get_prepared_base_json(force_refresh=False)
+        df = pd.read_json(StringIO(df_json), orient="split")
+
         options = [{"label": c, "value": c} for c in df.columns]
         selected = list(df.columns)
-        df_json = df.to_json(date_format="iso", orient="split")
         filename = Path(SHAREPOINT_FILE_PATH).name or "arquivo_compartilhado.xlsx"
-        msg = f"Arquivo carregado com sucesso.\nLinhas: {fmt_int_br(len(df))}  ·  Colunas: {fmt_int_br(len(df.columns))}"
+
+        msg = (
+            f"Arquivo carregado com sucesso.\n"
+            f"Linhas: {fmt_int_br(len(df))}  ·  Colunas: {fmt_int_br(len(df.columns))}\n"
+            f"Origem: cache/parquet otimizado"
+        )
 
         val_total = df["vl_financiamento_dolar"].sum() if "vl_financiamento_dolar" in df.columns else 0
         n_fontes = df["sg_fonte"].nunique() if "sg_fonte" in df.columns else 0
@@ -2373,4 +2489,4 @@ def export_carteira_operacoes_excel(
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8050, debug=True, use_reloader=False)
+    app.run(host="localhost", port=8050, debug=True, use_reloader=False)
