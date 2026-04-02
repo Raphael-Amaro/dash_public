@@ -62,7 +62,7 @@ BR_UF_GEOJSON_PATH = CACHE_DIR / "br_states_geojson.json"
 PARQUET_CACHE_PATH = CACHE_DIR / "base_preparada.parquet"
 PARQUET_META_PATH = CACHE_DIR / "base_preparada_meta.json"
 
-BASE_MEMORY_CACHE_KEY = "base_preparada_json_v1"
+BASE_MEMORY_CACHE_KEY = "base_preparada_json_v3"
 BASE_MEMORY_CACHE_TTL_SECONDS = 600
 
 # ── FORMATAÇÃO BRASILEIRA ─────────────────────────────────────────────────────
@@ -150,41 +150,6 @@ TEAL = COLOR_SEQUENCE[18]
 ROSE = COLOR_SEQUENCE[20]
 VIOLET = COLOR_SEQUENCE[22]
 MUTED = COLOR_SEQUENCE[26]
-
-FONTE_COLORS = {
-    "BIRD": COLOR_SEQUENCE[0],
-    "BID": COLOR_SEQUENCE[1],
-    "CAF": COLOR_SEQUENCE[2],
-    "NDB": COLOR_SEQUENCE[3],
-    "AFD": COLOR_SEQUENCE[4],
-    "KfW": COLOR_SEQUENCE[5],
-    "FONPLATA": COLOR_SEQUENCE[6],
-    "Outras": COLOR_SEQUENCE[8],
-}
-
-FASE_COLORS = {
-    "Em execução": COLOR_SEQUENCE[0],
-    "Repagamento": COLOR_SEQUENCE[1],
-    "Aprovado": COLOR_SEQUENCE[2],
-    "Aprovada COFIEX": COLOR_SEQUENCE[2],
-    "Aguardando Assinatura": COLOR_SEQUENCE[3],
-    "Em preparação": COLOR_SEQUENCE[4],
-    "Finalizada": COLOR_SEQUENCE[5],
-    "Arquivado": COLOR_SEQUENCE[8],
-    "Reprovada": COLOR_SEQUENCE[6],
-    "Devolvido": COLOR_SEQUENCE[10],
-    "Pautado na COFIEX": COLOR_SEQUENCE[9],
-    "Em negociação": COLOR_SEQUENCE[18],
-    "Em preenchimento": COLOR_SEQUENCE[26],
-    "Em análise": COLOR_SEQUENCE[14],
-    "Retornado": COLOR_SEQUENCE[20],
-}
-
-ESFERA_COLORS = {
-    "Federal": COLOR_SEQUENCE[0],
-    "Estadual": COLOR_SEQUENCE[1],
-    "Municipal": COLOR_SEQUENCE[4],
-}
 
 # ── PLOTLY ────────────────────────────────────────────────────────────────────
 
@@ -407,14 +372,6 @@ def date_date(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def year_str(df: pd.DataFrame) -> pd.DataFrame:
-    colunas_com_dt = [col for col in df.columns if "dt" in str(col).lower()]
-    for col in colunas_com_dt:
-        anos = pd.to_datetime(df[col], errors="coerce").dt.year
-        df["Ano_" + str(col)] = anos.fillna(0).astype("int64")
-    return df
-
-
 # ── CARGA OTIMIZADA DA BASE ───────────────────────────────────────────────────
 
 
@@ -422,9 +379,13 @@ def preprocess_base_df(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
     df.columns = [str(c).strip() for c in df.columns]
-
     df = date_date(df)
-    # df = year_str(df)
+
+    if "dt_primeira_cofiex" in df.columns:
+        df["ano_cofiex"] = pd.to_datetime(df["dt_primeira_cofiex"], errors="coerce").dt.year
+        df["ano_cofiex"] = df["ano_cofiex"].fillna(0).astype(int)
+    else:
+        df["ano_cofiex"] = 0
 
     for col in ["vl_financiamento_dolar", "vl_contrapartida_dolar"]:
         if col in df.columns:
@@ -531,11 +492,6 @@ def get_prepared_base_json(force_refresh: bool = False) -> str:
     return df_json
 
 
-def load_dataframe_from_sharepoint(force_refresh: bool = False) -> pd.DataFrame:
-    df_json = get_prepared_base_json(force_refresh=force_refresh)
-    return pd.read_json(StringIO(df_json), orient="split")
-
-
 def filter_df_by_columns(df_json: str | None, selected: list | None) -> pd.DataFrame:
     if not df_json:
         return pd.DataFrame()
@@ -556,40 +512,15 @@ def get_full_df(df_json: str | None) -> pd.DataFrame:
 # ── PROCESSAMENTO BASE ────────────────────────────────────────────────────────
 
 
-def escolher_coluna_ano(df: pd.DataFrame) -> str | None:
-    candidatas = [
-        "Ano_dt_primeira_cofiex",
-        "Ano_dt_recomendacao_cofiex",
-        "Ano_dt_cofiex",
-        "ano_cofiex",
-    ]
-
-    for col in candidatas:
-        if col in df.columns:
-            vals = pd.to_numeric(df[col], errors="coerce")
-            if vals.notna().any() and (vals > 0).any():
-                return col
-
-    colunas_ano = [c for c in df.columns if str(c).startswith("Ano_dt")]
-    for col in colunas_ano:
-        vals = pd.to_numeric(df[col], errors="coerce")
-        if vals.notna().any() and (vals > 0).any():
-            return col
-
-    return None
-
-
 def prep_painel_df(df_json: str | None, ano_range: list) -> pd.DataFrame | None:
     if not df_json:
         return None
 
     df = get_full_df(df_json).copy()
-
     if df.empty:
         return df
 
     df = date_date(df)
-    # df = year_str(df)
 
     for col in ["vl_financiamento_dolar", "vl_contrapartida_dolar"]:
         if col in df.columns:
@@ -612,15 +543,19 @@ def prep_painel_df(df_json: str | None, ano_range: list) -> pd.DataFrame | None:
                 .replace(["<NA>", "nan", "None", ""], default)
             )
 
-    col_ano = escolher_coluna_ano(df)
+    if "dt_primeira_cofiex" in df.columns:
+        df["ano_cofiex"] = pd.to_datetime(df["dt_primeira_cofiex"], errors="coerce").dt.year
+        df["ano_cofiex"] = df["ano_cofiex"].fillna(0).astype(int)
+    elif "ano_cofiex" in df.columns:
+        df["ano_cofiex"] = pd.to_numeric(df["ano_cofiex"], errors="coerce").fillna(0).astype(int)
+    else:
+        df["ano_cofiex"] = 0
 
-    if col_ano:
-        df["ano_cofiex"] = pd.to_numeric(df[col_ano], errors="coerce").fillna(0).astype(int)
-        df = df[df["ano_cofiex"] > 0]
+    df = df[df["ano_cofiex"] > 0]
 
-        if ano_range:
-            lo, hi = ano_range[0], ano_range[1]
-            df = df[df["ano_cofiex"].between(lo, hi)]
+    if ano_range and not df.empty:
+        lo, hi = ano_range[0], ano_range[1]
+        df = df[df["ano_cofiex"].between(lo, hi)]
 
     return df
 
@@ -704,9 +639,8 @@ def apply_dropdown_filters(
 
 
 def contar_projetos_distintos(df: pd.DataFrame) -> int:
-    for col in ["cd_pleito"]:
-        if col in df.columns:
-            return df[col].dropna().nunique()
+    if "cd_pleito" in df.columns:
+        return df["cd_pleito"].dropna().nunique()
     return len(df)
 
 
@@ -718,11 +652,44 @@ def fmt_bi(v: float) -> str:
     return f"US$ {brazil_vlr(v, 0)}"
 
 
+def build_filtered_carteira_df(
+    df_json,
+    ano_range,
+    de_fase,
+    de_tipo_operacao,
+    nm_proponente,
+    sg_fonte,
+    de_esfera,
+    nm_regiao,
+    nm_setor,
+    nm_subsetor,
+    sg_setor,
+    sys,
+    nm_limite,
+):
+    df = prep_carteira_df(df_json, ano_range or [ANO_MIN, ANO_MAX])
+
+    if df is None or df.empty:
+        return df
+
+    df = apply_dropdown_filters(
+        df,
+        de_fase=de_fase,
+        de_tipo_operacao=de_tipo_operacao,
+        nm_proponente=nm_proponente,
+        sg_fonte=sg_fonte,
+        de_esfera=de_esfera,
+        nm_regiao=nm_regiao,
+        nm_setor=nm_setor,
+        nm_subsetor=nm_subsetor,
+        sg_setor=sg_setor,
+        sys=sys,
+        nm_limite=nm_limite,
+    )
+    return df
+
+
 # ── CONSTRUTORES DE GRÁFICOS ──────────────────────────────────────────────────
-
-
-def _gradient(base_rgb: tuple, n: int, lo=0.35, hi=0.95) -> list[str]:
-    return [COLOR_SEQUENCE[i % len(COLOR_SEQUENCE)] for i in range(n)]
 
 
 def chart_temporal(df: pd.DataFrame, metrica: str) -> go.Figure:
@@ -749,8 +716,6 @@ def chart_temporal(df: pd.DataFrame, metrica: str) -> go.Figure:
     grp["proj_fmt"] = grp["proj"].apply(fmt_int_br)
 
     y_vals = grp["valor_mi"] if metrica == "valor" else grp["qtd"]
-    y_label = "Financiamento (US$ milhões)" if metrica == "valor" else "Operações"
-
     customdata = list(zip(grp["valor_fmt"], grp["qtd_fmt"], grp["proj_fmt"]))
 
     fig = go.Figure()
@@ -759,7 +724,6 @@ def chart_temporal(df: pd.DataFrame, metrica: str) -> go.Figure:
         go.Bar(
             x=grp["ano_cofiex"],
             y=y_vals,
-            name=y_label,
             marker_color=COLOR_SEQUENCE[0],
             marker_line_width=0,
             opacity=0.88,
@@ -794,14 +758,12 @@ def chart_temporal(df: pd.DataFrame, metrica: str) -> go.Figure:
                 ),
             )
         )
-
         apply_layout(
             fig,
-            xaxis=merge_dict(XAXIS_DEF, dtick=1, tickangle=0),
+            xaxis=merge_dict(XAXIS_DEF, dtick=1),
             yaxis=merge_dict(YAXIS_DEF, tickformat=",.0f", ticksuffix="M"),
             margin=dict(t=30, r=20, b=50, l=20),
             legend=DEFAULT_LEGEND,
-            barmode="group",
             yaxis2=dict(
                 overlaying="y",
                 side="right",
@@ -813,11 +775,10 @@ def chart_temporal(df: pd.DataFrame, metrica: str) -> go.Figure:
     else:
         apply_layout(
             fig,
-            xaxis=merge_dict(XAXIS_DEF, dtick=1, tickangle=0),
+            xaxis=merge_dict(XAXIS_DEF, dtick=1),
             yaxis=merge_dict(YAXIS_DEF, tickformat=",.0f"),
             margin=dict(t=30, r=20, b=50, l=20),
             legend=DEFAULT_LEGEND,
-            barmode="group",
         )
 
     return fig
@@ -828,26 +789,18 @@ def chart_setor(df: pd.DataFrame, metrica: str) -> go.Figure:
         return EMPTY_FIG
 
     agg_dict = {
-        "val": ("vl_financiamento_dolar", "sum") if "vl_financiamento_dolar" in df.columns else ("nm_setor", "size"),
+        "val": ("vl_financiamento_dolar", "sum"),
         "qtd": ("nm_setor", "size"),
+        "proj": ("cd_pleito", pd.Series.nunique) if "cd_pleito" in df.columns else ("nm_setor", "size"),
     }
-    if "cd_pleito" in df.columns:
-        agg_dict["proj"] = ("cd_pleito", pd.Series.nunique)
-    else:
-        agg_dict["proj"] = ("nm_setor", "size")
 
-    grp = (
-        df.groupby("nm_setor")
-        .agg(**agg_dict)
-        .reset_index()
-        .rename(columns={"nm_setor": "setor"})
-    )
-
+    grp = df.groupby("nm_setor").agg(**agg_dict).reset_index().rename(columns={"nm_setor": "setor"})
     if grp.empty:
         return EMPTY_FIG
 
-    grp = grp.nlargest(10, "val" if metrica == "valor" else "qtd").copy()
-    grp = grp.sort_values("val" if metrica == "valor" else "qtd", ascending=False)
+    grp = grp.nlargest(10, "val" if metrica == "valor" else "qtd").sort_values(
+        "val" if metrica == "valor" else "qtd", ascending=False
+    )
 
     grp["val_mi"] = grp["val"] / 1e6
     grp["val_fmt"] = grp["val_mi"].apply(lambda x: f"{brazil_vlr(x, 0)}M")
@@ -855,15 +808,13 @@ def chart_setor(df: pd.DataFrame, metrica: str) -> go.Figure:
     grp["proj_fmt"] = grp["proj"].apply(fmt_int_br)
 
     xval = grp["val_mi"] if metrica == "valor" else grp["qtd"]
-    clrs = [COLOR_SEQUENCE[i % len(COLOR_SEQUENCE)] for i in range(len(grp))]
 
     fig = go.Figure(
         go.Bar(
             x=xval,
             y=grp["setor"],
             orientation="h",
-            marker_color=clrs,
-            marker_line_width=0,
+            marker_color=[COLOR_SEQUENCE[i % len(COLOR_SEQUENCE)] for i in range(len(grp))],
             customdata=list(zip(grp["val_fmt"], grp["qtd_fmt"], grp["proj_fmt"])),
             hovertemplate=(
                 "<b>%{y}</b><br>"
@@ -877,16 +828,9 @@ def chart_setor(df: pd.DataFrame, metrica: str) -> go.Figure:
 
     apply_layout(
         fig,
-        xaxis=merge_dict(
-            XAXIS_DEF,
-            showgrid=True,
-            gridcolor="#F1F5F9",
-            tickformat=",.0f",
-            ticksuffix="M" if metrica == "valor" else "",
-        ),
+        xaxis=merge_dict(XAXIS_DEF, showgrid=True, gridcolor="#F1F5F9", tickformat=",.0f", ticksuffix="M" if metrica == "valor" else ""),
         yaxis=merge_dict(YAXIS_DEF, showgrid=False, automargin=True, autorange="reversed"),
         margin=dict(t=20, r=80, b=40, l=190),
-        legend=DEFAULT_LEGEND,
     )
     return fig
 
@@ -895,19 +839,14 @@ def chart_fonte(df: pd.DataFrame, metrica: str) -> go.Figure:
     if "sg_fonte_resumo" not in df.columns or df.empty:
         return EMPTY_FIG
 
-    agg_dict = {
-        "val": ("vl_financiamento_dolar", "sum") if metrica == "valor" else ("sg_fonte_resumo", "size"),
-        "valor_fin": ("vl_financiamento_dolar", "sum"),
-        "qtd": ("sg_fonte_resumo", "size"),
-    }
-    if "cd_pleito" in df.columns:
-        agg_dict["proj"] = ("cd_pleito", pd.Series.nunique)
-    else:
-        agg_dict["proj"] = ("sg_fonte_resumo", "size")
-
     grp = (
         df.groupby("sg_fonte_resumo")
-        .agg(**agg_dict)
+        .agg(
+            val=("vl_financiamento_dolar", "sum") if metrica == "valor" else ("sg_fonte_resumo", "size"),
+            valor_fin=("vl_financiamento_dolar", "sum"),
+            qtd=("sg_fonte_resumo", "size"),
+            proj=("cd_pleito", pd.Series.nunique) if "cd_pleito" in df.columns else ("sg_fonte_resumo", "size"),
+        )
         .reset_index()
         .rename(columns={"sg_fonte_resumo": "fonte"})
     )
@@ -920,16 +859,13 @@ def chart_fonte(df: pd.DataFrame, metrica: str) -> go.Figure:
     grp["qtd_fmt"] = grp["qtd"].apply(fmt_int_br)
     grp["proj_fmt"] = grp["proj"].apply(fmt_int_br)
 
-    clrs = [COLOR_SEQUENCE[i % len(COLOR_SEQUENCE)] for i in range(len(grp))]
-
     fig = go.Figure(
         go.Pie(
             labels=grp["fonte"],
             values=grp["val"],
             hole=0.62,
-            marker=dict(colors=clrs, line=dict(color="white", width=2)),
+            marker=dict(colors=[COLOR_SEQUENCE[i % len(COLOR_SEQUENCE)] for i in range(len(grp))], line=dict(color="white", width=2)),
             textinfo="label+percent",
-            textfont=dict(size=11),
             customdata=list(zip(grp["valor_fmt"], grp["qtd_fmt"], grp["proj_fmt"])),
             hovertemplate=(
                 "<b>%{label}</b><br>"
@@ -943,8 +879,6 @@ def chart_fonte(df: pd.DataFrame, metrica: str) -> go.Figure:
 
     apply_layout(
         fig,
-        xaxis=XAXIS_DEF,
-        yaxis=YAXIS_DEF,
         margin=dict(t=20, r=130, b=20, l=20),
         legend=dict(orientation="v", x=1.02, y=0.5, font=dict(size=11)),
     )
@@ -955,19 +889,14 @@ def chart_fase_percentual(df: pd.DataFrame, metrica: str) -> go.Figure:
     if "de_fase" not in df.columns or df.empty:
         return EMPTY_FIG
 
-    agg_dict = {
-        "val": ("vl_financiamento_dolar", "sum") if metrica == "valor" else ("de_fase", "size"),
-        "valor_fin": ("vl_financiamento_dolar", "sum"),
-        "qtd": ("de_fase", "size"),
-    }
-    if "cd_pleito" in df.columns:
-        agg_dict["proj"] = ("cd_pleito", pd.Series.nunique)
-    else:
-        agg_dict["proj"] = ("de_fase", "size")
-
     grp = (
         df.groupby("de_fase")
-        .agg(**agg_dict)
+        .agg(
+            val=("vl_financiamento_dolar", "sum") if metrica == "valor" else ("de_fase", "size"),
+            valor_fin=("vl_financiamento_dolar", "sum"),
+            qtd=("de_fase", "size"),
+            proj=("cd_pleito", pd.Series.nunique) if "cd_pleito" in df.columns else ("de_fase", "size"),
+        )
         .reset_index()
         .rename(columns={"de_fase": "fase"})
     )
@@ -980,16 +909,13 @@ def chart_fase_percentual(df: pd.DataFrame, metrica: str) -> go.Figure:
     grp["qtd_fmt"] = grp["qtd"].apply(fmt_int_br)
     grp["proj_fmt"] = grp["proj"].apply(fmt_int_br)
 
-    clrs = [COLOR_SEQUENCE[i % len(COLOR_SEQUENCE)] for i in range(len(grp))]
-
     fig = go.Figure(
         go.Pie(
             labels=grp["fase"],
             values=grp["val"],
             hole=0.62,
-            marker=dict(colors=clrs, line=dict(color="white", width=2)),
+            marker=dict(colors=[COLOR_SEQUENCE[i % len(COLOR_SEQUENCE)] for i in range(len(grp))], line=dict(color="white", width=2)),
             textinfo="label+percent",
-            textfont=dict(size=11),
             customdata=list(zip(grp["valor_fmt"], grp["qtd_fmt"], grp["proj_fmt"])),
             hovertemplate=(
                 "<b>%{label}</b><br>"
@@ -1003,17 +929,8 @@ def chart_fase_percentual(df: pd.DataFrame, metrica: str) -> go.Figure:
 
     apply_layout(
         fig,
-        xaxis=XAXIS_DEF,
-        yaxis=YAXIS_DEF,
         margin=dict(t=20, r=20, b=90, l=20),
-        legend=dict(
-            orientation="h",
-            yanchor="top",
-            y=-0.12,
-            xanchor="center",
-            x=0.5,
-            font=dict(size=11),
-        ),
+        legend=dict(orientation="h", yanchor="top", y=-0.12, xanchor="center", x=0.5, font=dict(size=11)),
     )
     return fig
 
@@ -1022,18 +939,13 @@ def chart_fase(df: pd.DataFrame, metrica: str) -> go.Figure:
     if "de_fase" not in df.columns or df.empty:
         return EMPTY_FIG
 
-    agg_dict = {
-        "valor": ("vl_financiamento_dolar", "sum"),
-        "qtd": ("de_fase", "size"),
-    }
-    if "cd_pleito" in df.columns:
-        agg_dict["proj"] = ("cd_pleito", pd.Series.nunique)
-    else:
-        agg_dict["proj"] = ("de_fase", "size")
-
     grp = (
         df.groupby("de_fase")
-        .agg(**agg_dict)
+        .agg(
+            valor=("vl_financiamento_dolar", "sum"),
+            qtd=("de_fase", "size"),
+            proj=("cd_pleito", pd.Series.nunique) if "cd_pleito" in df.columns else ("de_fase", "size"),
+        )
         .reset_index()
         .rename(columns={"de_fase": "fase"})
     )
@@ -1047,11 +959,9 @@ def chart_fase(df: pd.DataFrame, metrica: str) -> go.Figure:
         txt = str(txt)
         if len(txt) <= limite:
             return txt
-
         partes = txt.split()
         linhas = []
         linha_atual = ""
-
         for parte in partes:
             teste = f"{linha_atual} {parte}".strip()
             if len(teste) <= limite:
@@ -1060,10 +970,8 @@ def chart_fase(df: pd.DataFrame, metrica: str) -> go.Figure:
                 if linha_atual:
                     linhas.append(linha_atual)
                 linha_atual = parte
-
         if linha_atual:
             linhas.append(linha_atual)
-
         return "<br>".join(linhas)
 
     grp["fase_label"] = grp["fase"].apply(quebra_linha)
@@ -1072,16 +980,12 @@ def chart_fase(df: pd.DataFrame, metrica: str) -> go.Figure:
     grp["proj_fmt"] = grp["proj"].apply(fmt_int_br)
 
     y_bar = grp["valor"] / 1e6 if metrica == "valor" else grp["qtd"]
-    clrs = [COLOR_SEQUENCE[i % len(COLOR_SEQUENCE)] for i in range(len(grp))]
 
-    fig = go.Figure()
-    fig.add_trace(
+    fig = go.Figure(
         go.Bar(
             x=grp["fase_label"],
             y=y_bar,
-            marker_color=clrs,
-            marker_line_width=0,
-            name="Financiamento (US$ milhões)" if metrica == "valor" else "Operações",
+            marker_color=[COLOR_SEQUENCE[i % len(COLOR_SEQUENCE)] for i in range(len(grp))],
             customdata=list(zip(grp["fase"], grp["qtd_fmt"], grp["valor_mi_fmt"], grp["proj_fmt"])),
             hovertemplate=(
                 "<b>%{customdata[0]}</b><br>"
@@ -1096,13 +1000,8 @@ def chart_fase(df: pd.DataFrame, metrica: str) -> go.Figure:
     apply_layout(
         fig,
         xaxis=merge_dict(XAXIS_DEF, tickangle=0, automargin=True, ticklabelstandoff=18),
-        yaxis=merge_dict(
-            YAXIS_DEF,
-            tickformat=",.0f",
-            ticksuffix="M" if metrica == "valor" else "",
-        ),
+        yaxis=merge_dict(YAXIS_DEF, tickformat=",.0f", ticksuffix="M" if metrica == "valor" else ""),
         margin=dict(t=20, r=20, b=110, l=60),
-        legend=DEFAULT_LEGEND,
     )
     return fig
 
@@ -1111,18 +1010,13 @@ def chart_esfera(df: pd.DataFrame, metrica: str) -> go.Figure:
     if "de_esfera" not in df.columns or df.empty:
         return EMPTY_FIG
 
-    agg_dict = {
-        "valor": ("vl_financiamento_dolar", "sum"),
-        "qtd": ("de_esfera", "size"),
-    }
-    if "cd_pleito" in df.columns:
-        agg_dict["qtd_projetos"] = ("cd_pleito", pd.Series.nunique)
-    else:
-        agg_dict["qtd_projetos"] = ("de_esfera", "size")
-
     grp = (
         df.groupby("de_esfera")
-        .agg(**agg_dict)
+        .agg(
+            valor=("vl_financiamento_dolar", "sum"),
+            qtd=("de_esfera", "size"),
+            qtd_projetos=("cd_pleito", pd.Series.nunique) if "cd_pleito" in df.columns else ("de_esfera", "size"),
+        )
         .reset_index()
         .rename(columns={"de_esfera": "esfera"})
     )
@@ -1131,9 +1025,7 @@ def chart_esfera(df: pd.DataFrame, metrica: str) -> go.Figure:
         return EMPTY_FIG
 
     grp = grp.sort_values("valor" if metrica == "valor" else "qtd", ascending=False)
-
     yval = grp["valor"] / 1e6 if metrica == "valor" else grp["qtd"]
-    clrs = [COLOR_SEQUENCE[i % len(COLOR_SEQUENCE)] for i in range(len(grp))]
 
     grp["valor_fmt"] = (grp["valor"] / 1e6).apply(lambda x: f"{brazil_vlr(x, 0)}M")
     grp["qtd_fmt"] = grp["qtd"].apply(fmt_int_br)
@@ -1143,30 +1035,22 @@ def chart_esfera(df: pd.DataFrame, metrica: str) -> go.Figure:
         go.Bar(
             x=grp["esfera"],
             y=yval,
-            marker_color=clrs,
-            marker_line_width=0,
             width=0.45,
+            marker_color=[COLOR_SEQUENCE[i % len(COLOR_SEQUENCE)] for i in range(len(grp))],
             customdata=list(zip(grp["esfera"], grp["valor_fmt"], grp["qtd_fmt"], grp["qtd_projetos_fmt"])),
             hovertemplate=(
                 "<b>%{customdata[0]}</b><br>"
                 "Valor de financiamento: US$ %{customdata[1]}<br>"
                 "Quantidade de operações: %{customdata[2]}<br>"
-                "Quantidade de projetos: %{customdata[3]}<br>"
-                "<extra></extra>"
+                "Quantidade de projetos: %{customdata[3]}<extra></extra>"
             ),
         )
     )
 
     apply_layout(
         fig,
-        xaxis=XAXIS_DEF,
-        yaxis=merge_dict(
-            YAXIS_DEF,
-            tickformat=",.0f",
-            ticksuffix="M" if metrica == "valor" else "",
-        ),
+        yaxis=merge_dict(YAXIS_DEF, tickformat=",.0f", ticksuffix="M" if metrica == "valor" else ""),
         margin=dict(t=20, r=20, b=50, l=60),
-        legend=DEFAULT_LEGEND,
     )
     return fig
 
@@ -1175,18 +1059,13 @@ def chart_regiao(df: pd.DataFrame, metrica: str) -> go.Figure:
     if "nm_regiao" not in df.columns or df.empty:
         return EMPTY_FIG
 
-    agg_dict = {
-        "valor": ("vl_financiamento_dolar", "sum"),
-        "qtd": ("nm_regiao", "size"),
-    }
-    if "cd_pleito" in df.columns:
-        agg_dict["qtd_projetos"] = ("cd_pleito", pd.Series.nunique)
-    else:
-        agg_dict["qtd_projetos"] = ("nm_regiao", "size")
-
     grp = (
         df.groupby("nm_regiao")
-        .agg(**agg_dict)
+        .agg(
+            valor=("vl_financiamento_dolar", "sum"),
+            qtd=("nm_regiao", "size"),
+            qtd_projetos=("cd_pleito", pd.Series.nunique) if "cd_pleito" in df.columns else ("nm_regiao", "size"),
+        )
         .reset_index()
         .rename(columns={"nm_regiao": "regiao"})
     )
@@ -1195,9 +1074,7 @@ def chart_regiao(df: pd.DataFrame, metrica: str) -> go.Figure:
         return EMPTY_FIG
 
     grp = grp.sort_values("valor" if metrica == "valor" else "qtd", ascending=False)
-
     yval = grp["valor"] / 1e6 if metrica == "valor" else grp["qtd"]
-    clrs = [COLOR_SEQUENCE[i % len(COLOR_SEQUENCE)] for i in range(len(grp))]
 
     grp["valor_fmt"] = (grp["valor"] / 1e6).apply(lambda x: f"{brazil_vlr(x, 0)}M")
     grp["qtd_fmt"] = grp["qtd"].apply(fmt_int_br)
@@ -1207,29 +1084,21 @@ def chart_regiao(df: pd.DataFrame, metrica: str) -> go.Figure:
         go.Bar(
             x=grp["regiao"],
             y=yval,
-            marker_color=clrs,
-            marker_line_width=0,
+            marker_color=[COLOR_SEQUENCE[i % len(COLOR_SEQUENCE)] for i in range(len(grp))],
             customdata=list(zip(grp["regiao"], grp["valor_fmt"], grp["qtd_fmt"], grp["qtd_projetos_fmt"])),
             hovertemplate=(
                 "<b>%{customdata[0]}</b><br>"
                 "Valor de financiamento: US$ %{customdata[1]}<br>"
                 "Quantidade de operações: %{customdata[2]}<br>"
-                "Quantidade de projetos: %{customdata[3]}<br>"
-                "<extra></extra>"
+                "Quantidade de projetos: %{customdata[3]}<extra></extra>"
             ),
         )
     )
 
     apply_layout(
         fig,
-        xaxis=XAXIS_DEF,
-        yaxis=merge_dict(
-            YAXIS_DEF,
-            tickformat=",.0f",
-            ticksuffix="M" if metrica == "valor" else "",
-        ),
+        yaxis=merge_dict(YAXIS_DEF, tickformat=",.0f", ticksuffix="M" if metrica == "valor" else ""),
         margin=dict(t=20, r=20, b=50, l=60),
-        legend=DEFAULT_LEGEND,
     )
     return fig
 
@@ -1239,25 +1108,19 @@ def chart_uf(df: pd.DataFrame, metrica: str) -> go.Figure:
         return EMPTY_FIG
 
     df_plot = df.copy()
-
     if "de_esfera" in df_plot.columns:
         df_plot = df_plot[df_plot["de_esfera"].astype(str).str.strip().str.lower() != "federal"]
 
     if df_plot.empty:
         return EMPTY_FIG
 
-    agg_dict = {
-        "valor": ("vl_financiamento_dolar", "sum"),
-        "qtd": ("sg_uf", "size"),
-    }
-    if "cd_pleito" in df_plot.columns:
-        agg_dict["qtd_projetos"] = ("cd_pleito", pd.Series.nunique)
-    else:
-        agg_dict["qtd_projetos"] = ("sg_uf", "size")
-
     grp = (
         df_plot.groupby("sg_uf")
-        .agg(**agg_dict)
+        .agg(
+            valor=("vl_financiamento_dolar", "sum"),
+            qtd=("sg_uf", "size"),
+            qtd_projetos=("cd_pleito", pd.Series.nunique) if "cd_pleito" in df_plot.columns else ("sg_uf", "size"),
+        )
         .reset_index()
         .rename(columns={"sg_uf": "uf"})
     )
@@ -1266,13 +1129,10 @@ def chart_uf(df: pd.DataFrame, metrica: str) -> go.Figure:
         return EMPTY_FIG
 
     grp = grp.nlargest(15, "valor" if metrica == "valor" else "qtd").sort_values(
-        "valor" if metrica == "valor" else "qtd",
-        ascending=False,
+        "valor" if metrica == "valor" else "qtd", ascending=False
     )
 
     xval = grp["valor"] / 1e6 if metrica == "valor" else grp["qtd"]
-    clrs = [COLOR_SEQUENCE[i % len(COLOR_SEQUENCE)] for i in range(len(grp))]
-
     grp["valor_fmt"] = (grp["valor"] / 1e6).apply(lambda x: f"{brazil_vlr(x, 0)}M")
     grp["qtd_fmt"] = grp["qtd"].apply(fmt_int_br)
     grp["qtd_projetos_fmt"] = grp["qtd_projetos"].apply(fmt_int_br)
@@ -1282,35 +1142,27 @@ def chart_uf(df: pd.DataFrame, metrica: str) -> go.Figure:
             x=xval,
             y=grp["uf"],
             orientation="h",
-            marker_color=clrs,
-            marker_line_width=0,
+            marker_color=[COLOR_SEQUENCE[i % len(COLOR_SEQUENCE)] for i in range(len(grp))],
             customdata=list(zip(grp["uf"], grp["valor_fmt"], grp["qtd_fmt"], grp["qtd_projetos_fmt"])),
             hovertemplate=(
                 "<b>%{customdata[0]}</b><br>"
                 "Valor de financiamento: US$ %{customdata[1]}<br>"
                 "Quantidade de operações: %{customdata[2]}<br>"
-                "Quantidade de projetos: %{customdata[3]}<br>"
-                "<extra></extra>"
+                "Quantidade de projetos: %{customdata[3]}<extra></extra>"
             ),
         )
     )
 
     apply_layout(
         fig,
-        xaxis=merge_dict(
-            XAXIS_DEF,
-            showgrid=True,
-            gridcolor="#F1F5F9",
-            tickformat=",.0f",
-            ticksuffix="M" if metrica == "valor" else "",
-        ),
+        xaxis=merge_dict(XAXIS_DEF, showgrid=True, gridcolor="#F1F5F9", tickformat=",.0f", ticksuffix="M" if metrica == "valor" else ""),
         yaxis=merge_dict(YAXIS_DEF, showgrid=False, autorange="reversed"),
         margin=dict(t=20, r=70, b=40, l=55),
-        legend=DEFAULT_LEGEND,
     )
     return fig
 
 
+@cache.memoize(timeout=86400)
 def load_br_states_geojson() -> dict:
     if BR_UF_GEOJSON_PATH.exists():
         with open(BR_UF_GEOJSON_PATH, "r", encoding="utf-8") as f:
@@ -1337,25 +1189,17 @@ def chart_mapa_uf(df: pd.DataFrame, metrica: str) -> go.Figure:
     if "de_esfera" in df_map.columns:
         df_map = df_map[df_map["de_esfera"].astype(str).str.strip().str.lower() != "federal"]
 
-    if "de_fase" in df_map.columns:
-        df_map = df_map[df_map["de_fase"].astype(str).str.strip().str.lower() != "federal"]
-
     df_map["cd_uf"] = pd.to_numeric(df_map["cd_uf"], errors="coerce")
     df_map = df_map[df_map["cd_uf"].notna()]
 
     if df_map.empty:
         return EMPTY_FIG
 
-    agg_dict = {
-        "valor_financiamento": ("vl_financiamento_dolar", "sum"),
-        "qtd_operacoes": ("cd_uf", "size"),
-    }
-    if "cd_pleito" in df_map.columns:
-        agg_dict["qtd_projetos"] = ("cd_pleito", pd.Series.nunique)
-    else:
-        agg_dict["qtd_projetos"] = ("cd_uf", "size")
-
-    grp = df_map.groupby("cd_uf", as_index=False).agg(**agg_dict)
+    grp = df_map.groupby("cd_uf", as_index=False).agg(
+        valor_financiamento=("vl_financiamento_dolar", "sum"),
+        qtd_operacoes=("cd_uf", "size"),
+        qtd_projetos=("cd_pleito", pd.Series.nunique) if "cd_pleito" in df_map.columns else ("cd_uf", "size"),
+    )
     grp["val"] = grp["valor_financiamento"] if metrica == "valor" else grp["qtd_operacoes"]
 
     zmin = float(grp["val"].min()) if not grp.empty else 0
@@ -1363,11 +1207,7 @@ def chart_mapa_uf(df: pd.DataFrame, metrica: str) -> go.Figure:
 
     if metrica == "valor":
         colorbar = dict(
-            title=dict(
-                text="US$ milhões",
-                side="right",
-                font=dict(size=12),
-            ),
+            title=dict(text="US$ milhões", side="right", font=dict(size=12)),
             thickness=14,
             len=0.75,
             y=0.5,
@@ -1377,11 +1217,7 @@ def chart_mapa_uf(df: pd.DataFrame, metrica: str) -> go.Figure:
         )
     else:
         colorbar = dict(
-            title=dict(
-                text="Operações",
-                side="right",
-                font=dict(size=12),
-            ),
+            title=dict(text="Operações", side="right", font=dict(size=12)),
             thickness=14,
             len=0.75,
             y=0.5,
@@ -1399,9 +1235,7 @@ def chart_mapa_uf(df: pd.DataFrame, metrica: str) -> go.Figure:
     }
     grp["uf_sigla"] = grp["cd_uf"].map(nomes_estados).fillna("UF")
 
-    grp["valor_financiamento_fmt"] = grp["valor_financiamento"].apply(
-        lambda x: f"US$ {brazil_vlr(x / 1e6, 0)}M"
-    )
+    grp["valor_financiamento_fmt"] = grp["valor_financiamento"].apply(lambda x: f"US$ {brazil_vlr(x / 1e6, 0)}M")
     grp["qtd_operacoes_fmt"] = grp["qtd_operacoes"].apply(fmt_int_br)
     grp["qtd_projetos_fmt"] = grp["qtd_projetos"].apply(fmt_int_br)
 
@@ -1417,20 +1251,17 @@ def chart_mapa_uf(df: pd.DataFrame, metrica: str) -> go.Figure:
             marker_line_color="#94A3B8",
             marker_line_width=0.8,
             colorbar=colorbar,
-            customdata=list(
-                zip(
-                    grp["uf_sigla"],
-                    grp["valor_financiamento_fmt"],
-                    grp["qtd_operacoes_fmt"],
-                    grp["qtd_projetos_fmt"],
-                )
-            ),
+            customdata=list(zip(
+                grp["uf_sigla"],
+                grp["valor_financiamento_fmt"],
+                grp["qtd_operacoes_fmt"],
+                grp["qtd_projetos_fmt"],
+            )),
             hovertemplate=(
                 "<b>%{customdata[0]}</b><br>"
                 "Valor do financiamento: %{customdata[1]}<br>"
                 "Quantidade de operações: %{customdata[2]}<br>"
-                "Quantidade de projetos: %{customdata[3]}"
-                "<extra></extra>"
+                "Quantidade de projetos: %{customdata[3]}<extra></extra>"
             ),
         )
     )
@@ -1590,13 +1421,7 @@ def auth_status_card() -> html.Div:
 
 
 def unauthenticated_page_layout() -> html.Div:
-    return html.Div(
-        className="page-wrap fade-in",
-        children=[auth_status_card()],
-    )
-
-
-# ── LAYOUTS DE PÁGINA ─────────────────────────────────────────────────────────
+    return html.Div(className="page-wrap fade-in", children=[auth_status_card()])
 
 
 def home_page_layout(df_json: str | None = None) -> html.Div:
@@ -1611,10 +1436,7 @@ def home_page_layout(df_json: str | None = None) -> html.Div:
                 style={"marginTop": "6px"},
                 children=[
                     html.H1("Dados", className="page-title"),
-                    html.P(
-                        "Carregue, filtre e exporte os dados da planilha compartilhada.",
-                        className="page-subtitle",
-                    ),
+                    html.P("Carregue, filtre e exporte os dados da planilha compartilhada.", className="page-subtitle"),
                 ],
             ),
             html.Div(
@@ -1712,16 +1534,6 @@ def home_page_layout(df_json: str | None = None) -> html.Div:
                                         style_data_conditional=[
                                             {"if": {"row_index": "odd"}, "backgroundColor": "#FAFCFF"}
                                         ],
-                                        css=[
-                                            {
-                                                "selector": ".dash-spreadsheet-container table",
-                                                "rule": "border-collapse: separate; border-spacing: 0; width: 100%;",
-                                            },
-                                            {
-                                                "selector": ".dash-spreadsheet-container tr:hover td",
-                                                "rule": "background-color: #F1F5F9; transition: background-color 0.15s;",
-                                            },
-                                        ],
                                         data=[],
                                         columns=[],
                                     )
@@ -1744,10 +1556,7 @@ def bi_page_layout(df_json: str | None, selected: list | None, filename: str | N
                 className="page-header",
                 children=[
                     html.H1("Exploração Livre", className="page-title"),
-                    html.P(
-                        "Interface drag-and-drop para análises personalizadas sobre a base carregada.",
-                        className="page-subtitle",
-                    ),
+                    html.P("Interface drag-and-drop para análises personalizadas sobre a base carregada.", className="page-subtitle"),
                 ],
             ),
             html.Div(id="bi-lazy-container"),
@@ -1785,24 +1594,9 @@ app.layout = html.Div(
                 html.Nav(
                     className="sidebar-nav",
                     children=[
-                        dcc.Link(
-                            [html.Span(className="nav-dot nav-dot-amber"), "Dados"],
-                            href="/",
-                            className="sidebar-link",
-                            id="nav-dados",
-                        ),
-                        dcc.Link(
-                            [html.Span(className="nav-dot nav-dot-blue"), "Painel Analítico"],
-                            href="/painel",
-                            className="sidebar-link",
-                            id="nav-carteira-ativa",
-                        ),
-                        dcc.Link(
-                            [html.Span(className="nav-dot nav-dot-teal"), "Exploração Livre"],
-                            href="/bi",
-                            className="sidebar-link",
-                            id="nav-bi",
-                        ),
+                        dcc.Link([html.Span(className="nav-dot nav-dot-amber"), "Dados"], href="/", className="sidebar-link", id="nav-dados"),
+                        dcc.Link([html.Span(className="nav-dot nav-dot-blue"), "Painel Analítico"], href="/painel", className="sidebar-link", id="nav-carteira-ativa"),
+                        dcc.Link([html.Span(className="nav-dot nav-dot-teal"), "Exploração Livre"], href="/bi", className="sidebar-link", id="nav-bi"),
                     ],
                 ),
                 html.Div(
@@ -1824,10 +1618,7 @@ app.layout = html.Div(
 @server.route("/login")
 def login():
     msal_app = build_msal_app()
-    flow = msal_app.initiate_auth_code_flow(
-        scopes=SCOPES,
-        redirect_uri=build_redirect_uri(),
-    )
+    flow = msal_app.initiate_auth_code_flow(scopes=SCOPES, redirect_uri=build_redirect_uri())
     session["auth_flow"] = flow
     return redirect(flow["auth_uri"])
 
@@ -1839,11 +1630,7 @@ def auth_callback():
         return redirect("/")
 
     msal_app = build_msal_app()
-    result = msal_app.acquire_token_by_auth_code_flow(
-        flow,
-        dict(request.args),
-    )
-
+    result = msal_app.acquire_token_by_auth_code_flow(flow, dict(request.args))
     session.pop("auth_flow", None)
 
     if "access_token" not in result:
@@ -1852,7 +1639,6 @@ def auth_callback():
         return f"Falha na autenticação: {error} - {description}", 400
 
     claims = result.get("id_token_claims", {}) or {}
-
     session["access_token"] = result["access_token"]
     session["access_token_expires_at"] = time.time() + int(result.get("expires_in", 3600)) - 60
     session["id_token_claims"] = claims
@@ -1865,10 +1651,7 @@ def auth_callback():
 @server.route("/logout")
 def logout():
     clear_auth_session()
-    logout_url = (
-        f"{build_authority()}/oauth2/v2.0/logout"
-        f"?post_logout_redirect_uri={build_logout_redirect_uri()}"
-    )
+    logout_url = f"{build_authority()}/oauth2/v2.0/logout?post_logout_redirect_uri={build_logout_redirect_uri()}"
     return redirect(logout_url)
 
 
@@ -1945,18 +1728,11 @@ def render_bi_lazy_content(pathname, df_json, selected, filename):
         raise PreventUpdate
 
     if not df_json:
-        return _empty_state(
-            "Base não carregada",
-            "Acesse a página de Dados e carregue a base para habilitar a Exploração Livre.",
-        )
+        return _empty_state("Base não carregada", "Acesse a página de Dados e carregue a base para habilitar a Exploração Livre.")
 
     df = filter_df_by_columns(df_json, selected)
-
     if df.empty:
-        return _empty_state(
-            "Nenhuma coluna selecionada",
-            "Volte para Dados e selecione pelo menos uma coluna.",
-        )
+        return _empty_state("Nenhuma coluna selecionada", "Volte para Dados e selecione pelo menos uma coluna.")
 
     orig_df = pd.read_json(StringIO(df_json), orient="split")
     rows, cols = len(df), len(df.columns)
@@ -1977,15 +1753,8 @@ def render_bi_lazy_content(pathname, df_json, selected, filename):
         ),
         glass_card(
             *[
-                section_head(
-                    "PyGWalker",
-                    "Carregado somente ao abrir esta aba, utilizando toda a base disponível.",
-                ),
-                dcc.Loading(
-                    type="circle",
-                    color=ACCENT,
-                    children=[html.Iframe(srcDoc=pyg_html, className="bi-iframe")],
-                ),
+                section_head("PyGWalker", "Carregado somente ao abrir esta aba, utilizando toda a base disponível."),
+                dcc.Loading(type="circle", color=ACCENT, children=[html.Iframe(srcDoc=pyg_html, className="bi-iframe")]),
             ]
         ),
     ]
@@ -2011,13 +1780,7 @@ def load_shared_file(n_clicks):
         return (
             None,
             None,
-            [
-                html.Div("Status", className="status-title"),
-                html.Pre(
-                    "É necessário entrar com a Microsoft antes de carregar a base.",
-                    className="status-message",
-                ),
-            ],
+            [html.Div("Status", className="status-title"), html.Pre("É necessário entrar com a Microsoft antes de carregar a base.", className="status-message")],
             "status-box status-error",
             [],
             [],
@@ -2053,10 +1816,7 @@ def load_shared_file(n_clicks):
         return (
             df_json,
             filename,
-            [
-                html.Div("Status", className="status-title"),
-                html.Pre(msg, className="status-message"),
-            ],
+            [html.Div("Status", className="status-title"), html.Pre(msg, className="status-message")],
             "status-box status-success",
             options,
             selected,
@@ -2068,10 +1828,7 @@ def load_shared_file(n_clicks):
         return (
             None,
             None,
-            [
-                html.Div("Status", className="status-title"),
-                html.Pre(f"Erro ao carregar arquivo:\n\n{exc}", className="status-message"),
-            ],
+            [html.Div("Status", className="status-title"), html.Pre(f"Erro ao carregar arquivo:\n\n{exc}", className="status-message")],
             "status-box status-error",
             [],
             [],
@@ -2241,7 +1998,6 @@ def clear_carteira_selections(n_clicks):
     Output("carteira-fig-esfera", "figure"),
     Output("carteira-fig-regiao", "figure"),
     Output("carteira-fig-uf", "figure"),
-    Output("carteira-fig-mapa-uf", "figure"),
     Output("carteira-kpi-proj", "children"),
     Output("carteira-kpi-ops", "children"),
     Output("carteira-kpi-fin", "children"),
@@ -2263,7 +2019,7 @@ def clear_carteira_selections(n_clicks):
     Input("url", "pathname"),
     State("global-df-json", "data"),
 )
-def update_carteira_charts(
+def update_carteira_main(
     ano_range,
     metrica,
     de_fase,
@@ -2283,30 +2039,25 @@ def update_carteira_charts(
     if pathname != "/painel":
         raise PreventUpdate
 
-    df = prep_carteira_df(df_json, ano_range or [ANO_MIN, ANO_MAX])
-
-    if df is None or df.empty:
-        empty_kpi = kpi_block("—", "—", "sem dados")
-        return (EMPTY_FIG,) * 9 + (empty_kpi,) * 5
-
-    df = apply_dropdown_filters(
-        df,
-        de_fase=de_fase,
-        de_tipo_operacao=de_tipo_operacao,
-        nm_proponente=nm_proponente,
-        sg_fonte=sg_fonte,
-        de_esfera=de_esfera,
-        nm_regiao=nm_regiao,
-        nm_setor=nm_setor,
-        nm_subsetor=nm_subsetor,
-        sg_setor=sg_setor,
-        sys=sys,
-        nm_limite=nm_limite,
+    df = build_filtered_carteira_df(
+        df_json,
+        ano_range,
+        de_fase,
+        de_tipo_operacao,
+        nm_proponente,
+        sg_fonte,
+        de_esfera,
+        nm_regiao,
+        nm_setor,
+        nm_subsetor,
+        sg_setor,
+        sys,
+        nm_limite,
     )
 
     if df is None or df.empty:
-        empty_kpi = kpi_block("—", "—", "sem dados após seleção")
-        return (EMPTY_FIG,) * 9 + (empty_kpi,) * 5
+        empty_kpi = kpi_block("—", "—", "sem dados")
+        return (EMPTY_FIG,) * 8 + (empty_kpi,) * 5
 
     n_proj = contar_projetos_distintos(df)
     n_ops = len(df)
@@ -2329,13 +2080,72 @@ def update_carteira_charts(
         chart_esfera(df, metrica),
         chart_regiao(df, metrica),
         chart_uf(df, metrica),
-        chart_mapa_uf(df, metrica),
         kpi_block("Total de Projetos", fmt_int_br(n_proj), "projetos distintos"),
         kpi_block("Total de Operações", fmt_int_br(n_ops), "operações exibidas"),
         kpi_block("Financiamento Total", fmt_bi(val_fin), "soma em dólares"),
         kpi_block("Contrapartida Total", fmt_bi(val_contra), "soma em dólares"),
         kpi_block("Ano com Mais Aprovações", ano_rec, f"{fmt_int_br(ano_rec_n)} operações"),
     )
+
+
+@callback(
+    Output("carteira-fig-mapa-uf", "figure"),
+    Input("carteira-ano-range", "value"),
+    Input("carteira-metrica", "value"),
+    Input("carteira-select-de_fase", "value"),
+    Input("carteira-select-de_tipo_operacao", "value"),
+    Input("carteira-select-nm_proponente", "value"),
+    Input("carteira-select-sg_fonte", "value"),
+    Input("carteira-select-de_esfera", "value"),
+    Input("carteira-select-nm_regiao", "value"),
+    Input("carteira-select-nm_setor", "value"),
+    Input("carteira-select-nm_subsetor", "value"),
+    Input("carteira-select-sg_setor", "value"),
+    Input("carteira-select-sys", "value"),
+    Input("carteira-select-nm_limite", "value"),
+    Input("url", "pathname"),
+    State("global-df-json", "data"),
+)
+def update_carteira_map(
+    ano_range,
+    metrica,
+    de_fase,
+    de_tipo_operacao,
+    nm_proponente,
+    sg_fonte,
+    de_esfera,
+    nm_regiao,
+    nm_setor,
+    nm_subsetor,
+    sg_setor,
+    sys,
+    nm_limite,
+    pathname,
+    df_json,
+):
+    if pathname != "/painel":
+        raise PreventUpdate
+
+    df = build_filtered_carteira_df(
+        df_json,
+        ano_range,
+        de_fase,
+        de_tipo_operacao,
+        nm_proponente,
+        sg_fonte,
+        de_esfera,
+        nm_regiao,
+        nm_setor,
+        nm_subsetor,
+        sg_setor,
+        sys,
+        nm_limite,
+    )
+
+    if df is None or df.empty:
+        return EMPTY_FIG
+
+    return chart_mapa_uf(df, metrica)
 
 
 @callback(
@@ -2377,24 +2187,20 @@ def update_carteira_operacoes_table(
     if pathname != "/painel":
         raise PreventUpdate
 
-    df = prep_carteira_df(df_json, ano_range or [ANO_MIN, ANO_MAX])
-
-    if df is None or df.empty:
-        return [], []
-
-    df = apply_dropdown_filters(
-        df,
-        de_fase=de_fase,
-        de_tipo_operacao=de_tipo_operacao,
-        nm_proponente=nm_proponente,
-        sg_fonte=sg_fonte,
-        de_esfera=de_esfera,
-        nm_regiao=nm_regiao,
-        nm_setor=nm_setor,
-        nm_subsetor=nm_subsetor,
-        sg_setor=sg_setor,
-        sys=sys,
-        nm_limite=nm_limite,
+    df = build_filtered_carteira_df(
+        df_json,
+        ano_range,
+        de_fase,
+        de_tipo_operacao,
+        nm_proponente,
+        sg_fonte,
+        de_esfera,
+        nm_regiao,
+        nm_setor,
+        nm_subsetor,
+        sg_setor,
+        sys,
+        nm_limite,
     )
 
     if df is None or df.empty:
@@ -2405,11 +2211,7 @@ def update_carteira_operacoes_table(
         df = df[valid_cols] if valid_cols else df.iloc[:, 0:0]
 
     df_out = df.copy().where(pd.notnull(df), None)
-
-    return (
-        df_out.to_dict("records"),
-        [{"name": str(c), "id": str(c)} for c in df_out.columns],
-    )
+    return df_out.to_dict("records"), [{"name": str(c), "id": str(c)} for c in df_out.columns]
 
 
 @callback(
@@ -2453,24 +2255,20 @@ def export_carteira_operacoes_excel(
     if not n_clicks or pathname != "/painel" or not df_json:
         raise PreventUpdate
 
-    df = prep_carteira_df(df_json, ano_range or [ANO_MIN, ANO_MAX])
-
-    if df is None or df.empty:
-        raise PreventUpdate
-
-    df = apply_dropdown_filters(
-        df,
-        de_fase=de_fase,
-        de_tipo_operacao=de_tipo_operacao,
-        nm_proponente=nm_proponente,
-        sg_fonte=sg_fonte,
-        de_esfera=de_esfera,
-        nm_regiao=nm_regiao,
-        nm_setor=nm_setor,
-        nm_subsetor=nm_subsetor,
-        sg_setor=sg_setor,
-        sys=sys,
-        nm_limite=nm_limite,
+    df = build_filtered_carteira_df(
+        df_json,
+        ano_range,
+        de_fase,
+        de_tipo_operacao,
+        nm_proponente,
+        sg_fonte,
+        de_esfera,
+        nm_regiao,
+        nm_setor,
+        nm_subsetor,
+        sg_setor,
+        sys,
+        nm_limite,
     )
 
     if df is None or df.empty:
