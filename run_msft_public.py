@@ -22,6 +22,7 @@ from flask_caching import Cache
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from painel import painel_page_layout
+from carteira_analistas import carteira_analistas_page_layout
 
 load_dotenv()
 
@@ -41,6 +42,9 @@ CLIENT_SECRET = os.environ["CLIENT_SECRET"]
 SHAREPOINT_HOSTNAME = os.environ["SHAREPOINT_HOSTNAME"]
 SHAREPOINT_SITE_PATH = os.environ["SHAREPOINT_SITE_PATH"]
 SHAREPOINT_FILE_PATH = os.environ["SHAREPOINT_FILE_PATH"]
+
+SHAREPOINT_SITE_PATH_CA = os.environ["SHAREPOINT_SITE_PATH_CA"]
+SHAREPOINT_FILE_PATH_CA = os.environ["SHAREPOINT_FILE_PATH_CA"]
 
 FLASK_SECRET_KEY = os.environ["FLASK_SECRET_KEY"]
 APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:8050").rstrip("/")
@@ -62,7 +66,11 @@ BR_UF_GEOJSON_PATH = CACHE_DIR / "br_states_geojson.json"
 PARQUET_CACHE_PATH = CACHE_DIR / "base_preparada.parquet"
 PARQUET_META_PATH = CACHE_DIR / "base_preparada_meta.json"
 
+PARQUET_CACHE_PATH_CA = CACHE_DIR / "base_preparada_ca.parquet"
+PARQUET_META_PATH_CA = CACHE_DIR / "base_preparada_ca_meta.json"
+
 BASE_MEMORY_CACHE_KEY = "base_preparada_json_v3"
+BASE_MEMORY_CACHE_KEY_CA = "base_preparada_ca_json_v1"
 BASE_MEMORY_CACHE_TTL_SECONDS = 600
 
 # ── FORMATAÇÃO BRASILEIRA ─────────────────────────────────────────────────────
@@ -439,11 +447,46 @@ def _read_parquet_metadata() -> dict[str, Any] | None:
         return None
 
 
+def _save_parquet_metadata_ca() -> None:
+    meta = {
+        "updated_at_epoch": time.time(),
+        "updated_at_iso": datetime.now().isoformat(),
+    }
+    PARQUET_META_PATH_CA.write_text(
+        json.dumps(meta, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def _read_parquet_metadata_ca() -> dict[str, Any] | None:
+    if not PARQUET_META_PATH_CA.exists():
+        return None
+    try:
+        return json.loads(PARQUET_META_PATH_CA.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
 def _is_parquet_fresh(ttl_seconds: int = BASE_MEMORY_CACHE_TTL_SECONDS) -> bool:
     if not PARQUET_CACHE_PATH.exists():
         return False
 
     meta = _read_parquet_metadata()
+    if not meta:
+        return False
+
+    updated_at = float(meta.get("updated_at_epoch", 0))
+    if updated_at <= 0:
+        return False
+
+    return (time.time() - updated_at) < ttl_seconds
+
+
+def _is_parquet_fresh_ca(ttl_seconds: int = BASE_MEMORY_CACHE_TTL_SECONDS) -> bool:
+    if not PARQUET_CACHE_PATH_CA.exists():
+        return False
+
+    meta = _read_parquet_metadata_ca()
     if not meta:
         return False
 
@@ -473,11 +516,39 @@ def download_and_prepare_base_df() -> pd.DataFrame:
     return df
 
 
+def download_and_prepare_base_df_ca() -> pd.DataFrame:
+    access_token = get_access_token_from_session()
+    client = GraphSharePointClient(access_token=access_token)
+
+    raw = client.download_excel_from_site(
+        hostname=SHAREPOINT_HOSTNAME,
+        site_path=SHAREPOINT_SITE_PATH_CA,
+        file_path=SHAREPOINT_FILE_PATH_CA,
+    )
+
+    df = pd.read_excel(BytesIO(raw))
+    df = df.copy()
+    df.columns = [str(c).strip() for c in df.columns]
+    df = date_date(df)
+
+    df.to_parquet(PARQUET_CACHE_PATH_CA, index=False)
+    _save_parquet_metadata_ca()
+
+    return df
+
+
 def load_prepared_base_df(force_refresh: bool = False) -> pd.DataFrame:
     if not force_refresh and _is_parquet_fresh():
         return pd.read_parquet(PARQUET_CACHE_PATH)
 
     return download_and_prepare_base_df()
+
+
+def load_prepared_base_df_ca(force_refresh: bool = False) -> pd.DataFrame:
+    if not force_refresh and _is_parquet_fresh_ca():
+        return pd.read_parquet(PARQUET_CACHE_PATH_CA)
+
+    return download_and_prepare_base_df_ca()
 
 
 def get_prepared_base_json(force_refresh: bool = False) -> str:
@@ -489,6 +560,18 @@ def get_prepared_base_json(force_refresh: bool = False) -> str:
     df = load_prepared_base_df(force_refresh=force_refresh)
     df_json = df.to_json(date_format="iso", orient="split")
     cache.set(BASE_MEMORY_CACHE_KEY, df_json, timeout=BASE_MEMORY_CACHE_TTL_SECONDS)
+    return df_json
+
+
+def get_prepared_base_json_ca(force_refresh: bool = False) -> str:
+    if not force_refresh:
+        cached_json = cache.get(BASE_MEMORY_CACHE_KEY_CA)
+        if cached_json:
+            return cached_json
+
+    df = load_prepared_base_df_ca(force_refresh=force_refresh)
+    df_json = df.to_json(date_format="iso", orient="split")
+    cache.set(BASE_MEMORY_CACHE_KEY_CA, df_json, timeout=BASE_MEMORY_CACHE_TTL_SECONDS)
     return df_json
 
 
@@ -689,6 +772,44 @@ def build_filtered_carteira_df(
     return df
 
 
+def build_filtered_carteira_ca_df(
+    df_json_ca,
+    nm_cg=None,
+    nm_tecnico=None,
+    sg_pleito=None,
+):
+    if not df_json_ca:
+        return pd.DataFrame()
+
+    df = pd.read_json(StringIO(df_json_ca), orient="split")
+    if df.empty:
+        return df
+
+    filtros = {
+        "nm_cg": nm_cg,
+        "nm_tecnico": nm_tecnico,
+        "sg_pleito": sg_pleito,
+    }
+
+    alt_cols = {
+        "nm_cg": ["nm_cg", "NM_CG"],
+        "nm_tecnico": ["nm_tecnico", "NM_TECNICO"],
+        "sg_pleito": ["sg_pleito", "SG_PLEITO"],
+    }
+
+    out = df.copy()
+
+    for filtro_key, valores in filtros.items():
+        if not valores:
+            continue
+
+        col_encontrada = next((c for c in alt_cols[filtro_key] if c in out.columns), None)
+        if col_encontrada:
+            out = out[out[col_encontrada].astype("string").isin([str(v) for v in valores])]
+
+    return out
+
+
 # ── CONSTRUTORES DE GRÁFICOS ──────────────────────────────────────────────────
 
 
@@ -724,6 +845,8 @@ def chart_temporal(df: pd.DataFrame, metrica: str) -> go.Figure:
         go.Bar(
             x=grp["ano_cofiex"],
             y=y_vals,
+            name="Empréstimo (US$ milhões)" if metrica == "valor" else "Nº Operações",
+            showlegend=(metrica == "valor"),
             marker_color=COLOR_SEQUENCE[0],
             marker_line_width=0,
             opacity=0.88,
@@ -758,6 +881,7 @@ def chart_temporal(df: pd.DataFrame, metrica: str) -> go.Figure:
                 ),
             )
         )
+
         apply_layout(
             fig,
             xaxis=merge_dict(XAXIS_DEF, dtick=1),
@@ -779,6 +903,7 @@ def chart_temporal(df: pd.DataFrame, metrica: str) -> go.Figure:
             yaxis=merge_dict(YAXIS_DEF, tickformat=",.0f"),
             margin=dict(t=30, r=20, b=50, l=20),
             legend=DEFAULT_LEGEND,
+            showlegend=False,
         )
 
     return fig
@@ -828,7 +953,13 @@ def chart_setor(df: pd.DataFrame, metrica: str) -> go.Figure:
 
     apply_layout(
         fig,
-        xaxis=merge_dict(XAXIS_DEF, showgrid=True, gridcolor="#F1F5F9", tickformat=",.0f", ticksuffix="M" if metrica == "valor" else ""),
+        xaxis=merge_dict(
+            XAXIS_DEF,
+            showgrid=True,
+            gridcolor="#F1F5F9",
+            tickformat=",.0f",
+            ticksuffix="M" if metrica == "valor" else "",
+        ),
         yaxis=merge_dict(YAXIS_DEF, showgrid=False, automargin=True, autorange="reversed"),
         margin=dict(t=20, r=80, b=40, l=190),
     )
@@ -854,19 +985,24 @@ def chart_fonte(df: pd.DataFrame, metrica: str) -> go.Figure:
     if grp.empty:
         return EMPTY_FIG
 
-    grp = grp.sort_values("val", ascending=False)
+    grp = grp.sort_values("val", ascending=False).copy()
     grp["valor_fmt"] = (grp["valor_fin"] / 1e6).apply(lambda x: f"{brazil_vlr(x, 0)}M")
     grp["qtd_fmt"] = grp["qtd"].apply(fmt_int_br)
     grp["proj_fmt"] = grp["proj"].apply(fmt_int_br)
+
+    customdata = grp[["valor_fmt", "qtd_fmt", "proj_fmt"]].to_numpy()
 
     fig = go.Figure(
         go.Pie(
             labels=grp["fonte"],
             values=grp["val"],
             hole=0.62,
-            marker=dict(colors=[COLOR_SEQUENCE[i % len(COLOR_SEQUENCE)] for i in range(len(grp))], line=dict(color="white", width=2)),
+            marker=dict(
+                colors=[COLOR_SEQUENCE[i % len(COLOR_SEQUENCE)] for i in range(len(grp))],
+                line=dict(color="white", width=2),
+            ),
             textinfo="label+percent",
-            customdata=list(zip(grp["valor_fmt"], grp["qtd_fmt"], grp["proj_fmt"])),
+            customdata=customdata,
             hovertemplate=(
                 "<b>%{label}</b><br>"
                 "Valor de financiamento: US$ %{customdata[0]}<br>"
@@ -904,19 +1040,24 @@ def chart_fase_percentual(df: pd.DataFrame, metrica: str) -> go.Figure:
     if grp.empty:
         return EMPTY_FIG
 
-    grp = grp.sort_values("val", ascending=False)
+    grp = grp.sort_values("val", ascending=False).copy()
     grp["valor_fmt"] = (grp["valor_fin"] / 1e6).apply(lambda x: f"{brazil_vlr(x, 0)}M")
     grp["qtd_fmt"] = grp["qtd"].apply(fmt_int_br)
     grp["proj_fmt"] = grp["proj"].apply(fmt_int_br)
+
+    customdata = grp[["valor_fmt", "qtd_fmt", "proj_fmt"]].to_numpy()
 
     fig = go.Figure(
         go.Pie(
             labels=grp["fase"],
             values=grp["val"],
             hole=0.62,
-            marker=dict(colors=[COLOR_SEQUENCE[i % len(COLOR_SEQUENCE)] for i in range(len(grp))], line=dict(color="white", width=2)),
+            marker=dict(
+                colors=[COLOR_SEQUENCE[i % len(COLOR_SEQUENCE)] for i in range(len(grp))],
+                line=dict(color="white", width=2),
+            ),
             textinfo="label+percent",
-            customdata=list(zip(grp["valor_fmt"], grp["qtd_fmt"], grp["proj_fmt"])),
+            customdata=customdata,
             hovertemplate=(
                 "<b>%{label}</b><br>"
                 "Valor de financiamento: US$ %{customdata[0]}<br>"
@@ -930,7 +1071,14 @@ def chart_fase_percentual(df: pd.DataFrame, metrica: str) -> go.Figure:
     apply_layout(
         fig,
         margin=dict(t=20, r=20, b=90, l=20),
-        legend=dict(orientation="h", yanchor="top", y=-0.12, xanchor="center", x=0.5, font=dict(size=11)),
+        legend=dict(
+            orientation="h",
+            yanchor="top",
+            y=-0.12,
+            xanchor="center",
+            x=0.5,
+            font=dict(size=11),
+        ),
     )
     return fig
 
@@ -1155,7 +1303,13 @@ def chart_uf(df: pd.DataFrame, metrica: str) -> go.Figure:
 
     apply_layout(
         fig,
-        xaxis=merge_dict(XAXIS_DEF, showgrid=True, gridcolor="#F1F5F9", tickformat=",.0f", ticksuffix="M" if metrica == "valor" else ""),
+        xaxis=merge_dict(
+            XAXIS_DEF,
+            showgrid=True,
+            gridcolor="#F1F5F9",
+            tickformat=",.0f",
+            ticksuffix="M" if metrica == "valor" else "",
+        ),
         yaxis=merge_dict(YAXIS_DEF, showgrid=False, autorange="reversed"),
         margin=dict(t=20, r=70, b=40, l=55),
     )
@@ -1251,12 +1405,14 @@ def chart_mapa_uf(df: pd.DataFrame, metrica: str) -> go.Figure:
             marker_line_color="#94A3B8",
             marker_line_width=0.8,
             colorbar=colorbar,
-            customdata=list(zip(
-                grp["uf_sigla"],
-                grp["valor_financiamento_fmt"],
-                grp["qtd_operacoes_fmt"],
-                grp["qtd_projetos_fmt"],
-            )),
+            customdata=list(
+                zip(
+                    grp["uf_sigla"],
+                    grp["valor_financiamento_fmt"],
+                    grp["qtd_operacoes_fmt"],
+                    grp["qtd_projetos_fmt"],
+                )
+            ),
             hovertemplate=(
                 "<b>%{customdata[0]}</b><br>"
                 "Valor do financiamento: %{customdata[1]}<br>"
@@ -1574,6 +1730,11 @@ app.layout = html.Div(
         dcc.Store(id="global-filename"),
         dcc.Store(id="global-selected-columns"),
         dcc.Store(id="global-load-status", data="idle"),
+        dcc.Store(id="global-df-json-ca"),
+        dcc.Store(id="global-filename-ca"),
+        dcc.Store(id="global-load-status-ca", data="idle"),
+        dcc.Store(id="carteira-ca-selected-columns"),
+        dcc.Store(id="carteira-ca-loaded", data=False),
         dcc.Store(id="carteira-operacoes-selected-columns"),
         html.Aside(
             id="sidebar",
@@ -1594,9 +1755,40 @@ app.layout = html.Div(
                 html.Nav(
                     className="sidebar-nav",
                     children=[
-                        dcc.Link([html.Span(className="nav-dot nav-dot-amber"), "Dados"], href="/", className="sidebar-link", id="nav-dados"),
-                        dcc.Link([html.Span(className="nav-dot nav-dot-blue"), "Painel Analítico"], href="/painel", className="sidebar-link", id="nav-carteira-ativa"),
-                        dcc.Link([html.Span(className="nav-dot nav-dot-teal"), "Exploração Livre"], href="/bi", className="sidebar-link", id="nav-bi"),
+                        dcc.Link(
+                            [html.Span(className="nav-dot nav-dot-amber"), "Dados"],
+                            href="/",
+                            className="sidebar-link",
+                            id="nav-dados",
+                        ),
+                        dcc.Link(
+                            [html.Span(className="nav-dot nav-dot-blue"), "Painel Analítico"],
+                            href="/painel",
+                            className="sidebar-link",
+                            id="nav-carteira-ativa",
+                        ),
+                        dcc.Link(
+                            [html.Span(className="nav-dot nav-dot-teal"), "Exploração Livre"],
+                            href="/bi",
+                            className="sidebar-link",
+                            id="nav-bi",
+                        ),
+                        html.Div(
+                            [
+                                html.Div("Controles paralelos", className="sidebar-brand-title"),
+                            ],
+                            style={
+                                "marginTop": "14px",
+                                "paddingTop": "14px",
+                                "borderTop": "1px solid rgba(148,163,184,0.25)",
+                            },
+                        ),
+                        dcc.Link(
+                            [html.Span(className="nav-dot nav-dot-violet"), "[CGs] Carteira Ativa"],
+                            href="/carteira-cgs",
+                            className="sidebar-link",
+                            id="nav-carteira-cgs",
+                        ),
                     ],
                 ),
                 html.Div(
@@ -1676,6 +1868,7 @@ def toggle_sidebar(pathname, df_json):
     Output("nav-dados", "className"),
     Output("nav-carteira-ativa", "className"),
     Output("nav-bi", "className"),
+    Output("nav-carteira-cgs", "className"),
     Input("url", "pathname"),
 )
 def update_nav_classes(pathname):
@@ -1684,6 +1877,7 @@ def update_nav_classes(pathname):
         base + (" active" if pathname == "/" else ""),
         base + (" active" if pathname == "/painel" else ""),
         base + (" active" if pathname == "/bi" else ""),
+        base + (" active" if pathname == "/carteira-cgs" else ""),
     )
 
 
@@ -1702,6 +1896,8 @@ def render_page(pathname, df_json, selected_columns, filename):
         return painel_page_layout(df_json)
     if pathname == "/bi":
         return bi_page_layout(df_json, selected_columns, filename)
+    if pathname == "/carteira-cgs":
+        return carteira_analistas_page_layout(auth_component=auth_status_card())
     return home_page_layout(df_json)
 
 
@@ -1799,7 +1995,6 @@ def load_shared_file(n_clicks):
         msg = (
             f"Arquivo carregado com sucesso.\n"
             f"Linhas: {fmt_int_br(len(df))}  ·  Colunas: {fmt_int_br(len(df.columns))}\n"
-            f"Origem: cache/parquet otimizado"
         )
 
         val_total = df["vl_financiamento_dolar"].sum() if "vl_financiamento_dolar" in df.columns else 0
@@ -1835,6 +2030,325 @@ def load_shared_file(n_clicks):
             "error",
             [],
         )
+
+
+@callback(
+    Output("global-df-json-ca", "data"),
+    Output("global-filename-ca", "data"),
+    Output("status-box-ca", "children"),
+    Output("status-box-ca", "className"),
+    Output("global-load-status-ca", "data"),
+    Output("summary-cards-ca", "children"),
+    Output("preview-section-ca", "style"),
+    Output("carteira-ca-loaded", "data"),
+    Output("carteira-ca-select-nm_cg", "options"),
+    Output("carteira-ca-select-nm_tecnico", "options"),
+    Output("carteira-ca-select-sg_pleito", "options"),
+    Output("carteira-ca-column-selector", "options"),
+    Output("carteira-ca-column-selector", "value"),
+    Input("btn-load-ca", "n_clicks"),
+    prevent_initial_call=True,
+)
+def load_shared_file_ca(n_clicks):
+    if not n_clicks:
+        raise PreventUpdate
+
+    if not is_authenticated():
+        return (
+            None,
+            None,
+            [
+                html.Div("Status", className="status-title"),
+                html.Pre(
+                    "É necessário entrar com a Microsoft antes de carregar a base.",
+                    className="status-message",
+                ),
+            ],
+            "status-box status-error",
+            "error",
+            [],
+            {"display": "none"},
+            False,
+            [],
+            [],
+            [],
+            [],
+            [],
+        )
+
+    try:
+        df_json = get_prepared_base_json_ca(force_refresh=False)
+        df = pd.read_json(StringIO(df_json), orient="split")
+
+        filename = Path(SHAREPOINT_FILE_PATH_CA).name or "Carteira Ativa - CGs.xlsx"
+
+        total_registros = len(df)
+        total_colunas = len(df.columns)
+
+        col_cd_pleito = next((c for c in ["cd_pleito", "CD_PLEITO"] if c in df.columns), None)
+        n_pleitos_distintos = (
+            df[col_cd_pleito].astype("string").dropna().nunique()
+            if col_cd_pleito
+            else 0
+        )
+
+        msg = (
+            f"Arquivo carregado com sucesso.\n"
+            f"Linhas: {fmt_int_br(total_registros)}  ·  "
+            f"Pleitos distintos: {fmt_int_br(n_pleitos_distintos)}  ·  "
+            f"Colunas: {fmt_int_br(total_colunas)}"
+        )
+
+        summary = [
+            metric_card("Operações", fmt_int_br(total_registros), "linhas na base", ACCENT),
+            metric_card("Projetos", fmt_int_br(n_pleitos_distintos), "pleitos distintos", BLUE),
+            metric_card("Colunas", fmt_int_br(total_colunas), "variáveis disponíveis", TEAL),
+            metric_card("Arquivo", filename, "base ativa", ROSE),
+        ]
+
+        def build_options(df_local: pd.DataFrame, possible_cols: list[str]):
+            col_name = next((c for c in possible_cols if c in df_local.columns), None)
+            if not col_name:
+                return []
+
+            vals = (
+                df_local[col_name]
+                .astype("string")
+                .fillna("Não informado")
+                .replace(["<NA>", "nan", "None", ""], "Não informado")
+                .drop_duplicates()
+                .sort_values()
+                .tolist()
+            )
+            return [{"label": str(v), "value": str(v)} for v in vals]
+
+        col_options = [{"label": str(c), "value": str(c)} for c in df.columns]
+        default_cols = list(df.columns)
+
+        return (
+            df_json,
+            filename,
+            [
+                html.Div("Status", className="status-title"),
+                html.Pre(msg, className="status-message"),
+            ],
+            "status-box status-success",
+            "success",
+            summary,
+            {"display": "block"},
+            True,
+            build_options(df, ["nm_cg", "NM_CG"]),
+            build_options(df, ["nm_tecnico", "NM_TECNICO"]),
+            build_options(df, ["sg_pleito", "SG_PLEITO"]),
+            col_options,
+            default_cols,
+        )
+
+    except Exception as exc:
+        return (
+            None,
+            None,
+            [
+                html.Div("Status", className="status-title"),
+                html.Pre(f"Erro ao carregar arquivo:\n\n{exc}", className="status-message"),
+            ],
+            "status-box status-error",
+            "error",
+            [],
+            {"display": "none"},
+            False,
+            [],
+            [],
+            [],
+            [],
+            [],
+        )
+
+
+@callback(
+    Output("carteira-ca-select-nm_cg", "value"),
+    Output("carteira-ca-select-nm_tecnico", "value"),
+    Output("carteira-ca-select-sg_pleito", "value"),
+    Input("carteira-ca-btn-clear-selections", "n_clicks"),
+    prevent_initial_call=True,
+)
+def clear_carteira_ca_selections(n_clicks):
+    if not n_clicks:
+        raise PreventUpdate
+    return [], [], []
+
+
+@callback(
+    Output("summary-cards-ca", "children", allow_duplicate=True),
+    Output("status-box-ca", "children", allow_duplicate=True),
+    Output("status-box-ca", "className", allow_duplicate=True),
+    Output("preview-table-ca-dados", "data"),
+    Output("preview-table-ca-dados", "columns"),
+    Output("preview-table-ca", "data"),
+    Output("preview-table-ca", "columns"),
+    Input("global-df-json-ca", "data"),
+    Input("carteira-ca-select-nm_cg", "value"),
+    Input("carteira-ca-select-nm_tecnico", "value"),
+    Input("carteira-ca-select-sg_pleito", "value"),
+    Input("carteira-ca-column-selector", "value"),
+    State("global-filename-ca", "data"),
+    State("carteira-ca-loaded", "data"),
+    prevent_initial_call=True,
+)
+def update_carteira_ca_views(
+    df_json_ca,
+    nm_cg,
+    nm_tecnico,
+    sg_pleito,
+    selected_columns,
+    filename_ca,
+    carteira_ca_loaded,
+):
+    if not carteira_ca_loaded or not df_json_ca:
+        raise PreventUpdate
+
+    df_full = pd.read_json(StringIO(df_json_ca), orient="split")
+    df_filtrado = build_filtered_carteira_ca_df(
+        df_json_ca,
+        nm_cg=nm_cg,
+        nm_tecnico=nm_tecnico,
+        sg_pleito=sg_pleito,
+    )
+
+    total_registros = len(df_filtrado)
+    total_colunas = len(df_full.columns)
+
+    col_cd_pleito = next((c for c in ["cd_pleito", "CD_PLEITO"] if c in df_filtrado.columns), None)
+    n_pleitos_distintos = (
+        df_filtrado[col_cd_pleito].astype("string").dropna().nunique()
+        if col_cd_pleito
+        else 0
+    )
+
+    summary = [
+        metric_card("Operações", fmt_int_br(total_registros), "linhas filtradas", ACCENT),
+        metric_card("Projetos", fmt_int_br(n_pleitos_distintos), "pleitos distintos", BLUE),
+        metric_card("Colunas", fmt_int_br(total_colunas), "variáveis disponíveis", TEAL),
+        metric_card("Arquivo", filename_ca or "Carteira Ativa - CGs.xlsx", "base ativa", ROSE),
+    ]
+
+    msg = (
+        f"Filtros aplicados com sucesso.\n"
+        f"Linhas filtradas: {fmt_int_br(total_registros)}  ·  "
+        f"Pleitos distintos: {fmt_int_br(n_pleitos_distintos)}  ·  "
+        f"Colunas: {fmt_int_br(total_colunas)}"
+    )
+
+    preview_dados = df_filtrado.head(200).where(pd.notnull(df_filtrado.head(200)), None)
+
+    if selected_columns:
+        valid_cols = [c for c in selected_columns if c in df_filtrado.columns]
+        df_tabela = df_filtrado[valid_cols] if valid_cols else df_filtrado.iloc[:, 0:0]
+    else:
+        df_tabela = df_filtrado.copy()
+
+    df_tabela = df_tabela.where(pd.notnull(df_tabela), None)
+
+    return (
+        summary,
+        [
+            html.Div("Status", className="status-title"),
+            html.Pre(msg, className="status-message"),
+        ],
+        "status-box status-success",
+        preview_dados.to_dict("records"),
+        [{"name": str(c), "id": str(c)} for c in preview_dados.columns],
+        df_tabela.to_dict("records"),
+        [{"name": str(c), "id": str(c)} for c in df_tabela.columns],
+    )
+
+
+@callback(
+    Output("carteira-ca-selected-columns", "data"),
+    Input("carteira-ca-column-selector", "value"),
+    prevent_initial_call=True,
+)
+def sync_carteira_ca_columns(selected):
+    return selected or []
+
+
+@callback(
+    Output("carteira-ca-column-selector", "value", allow_duplicate=True),
+    Input("carteira-ca-btn-select-all", "n_clicks"),
+    State("carteira-ca-column-selector", "options"),
+    prevent_initial_call=True,
+)
+def select_all_carteira_ca_columns(n_clicks, options):
+    if not n_clicks or not options:
+        raise PreventUpdate
+    return [o["value"] for o in options]
+
+
+@callback(
+    Output("carteira-ca-column-selector", "value", allow_duplicate=True),
+    Input("carteira-ca-btn-clear-columns", "n_clicks"),
+    prevent_initial_call=True,
+)
+def clear_carteira_ca_columns(n_clicks):
+    if not n_clicks:
+        raise PreventUpdate
+    return []
+
+
+@callback(
+    Output("carteira-ca-selected-count", "children"),
+    Input("carteira-ca-column-selector", "options"),
+    Input("carteira-ca-column-selector", "value"),
+)
+def update_carteira_ca_selected_count(options, selected):
+    total = len(options or [])
+    sel = len(selected or [])
+    return f"{fmt_int_br(sel)} de {fmt_int_br(total)} selecionadas" if total else ""
+
+
+@callback(
+    Output("carteira-ca-download-excel", "data"),
+    Input("carteira-ca-btn-export", "n_clicks"),
+    State("carteira-ca-select-nm_cg", "value"),
+    State("carteira-ca-select-nm_tecnico", "value"),
+    State("carteira-ca-select-sg_pleito", "value"),
+    State("carteira-ca-column-selector", "value"),
+    State("global-df-json-ca", "data"),
+    State("carteira-ca-loaded", "data"),
+    prevent_initial_call=True,
+)
+def export_carteira_ca_excel(
+    n_clicks,
+    nm_cg,
+    nm_tecnico,
+    sg_pleito,
+    selected_columns,
+    df_json_ca,
+    carteira_ca_loaded,
+):
+    if not n_clicks or not carteira_ca_loaded or not df_json_ca:
+        raise PreventUpdate
+
+    df = build_filtered_carteira_ca_df(
+        df_json_ca,
+        nm_cg=nm_cg,
+        nm_tecnico=nm_tecnico,
+        sg_pleito=sg_pleito,
+    )
+
+    if df.empty:
+        raise PreventUpdate
+
+    if selected_columns:
+        valid_cols = [c for c in selected_columns if c in df.columns]
+        df = df[valid_cols] if valid_cols else df.iloc[:, 0:0]
+
+    buf = BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as w:
+        df.to_excel(w, index=False, sheet_name="carteira_cgs")
+    buf.seek(0)
+
+    return dcc.send_bytes(buf.getvalue(), "carteira_ativa_cgs_filtrada.xlsx")
 
 
 @callback(

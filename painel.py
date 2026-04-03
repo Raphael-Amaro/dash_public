@@ -22,7 +22,7 @@ SELECT_FIELDS = [
     ("nm_setor", "Setor"),
     ("nm_subsetor", "Subsetor"),
     ("sg_setor", "Coordenação"),
-    ("sys", "SYS"),
+    ("sys", "Sistema"),
     ("nm_limite", "Limite"),
 ]
 
@@ -518,7 +518,7 @@ def painel_page_layout(df_json: str | None) -> html.Div:
                         ],
                     ),
                     dcc.Tab(
-                        label="Operações",
+                        label="Tabela",
                         value="operacoes",
                         className="painel-tab",
                         selected_className="painel-tab--active",
