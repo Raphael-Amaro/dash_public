@@ -1,4 +1,40 @@
+from io import StringIO
+
+import pandas as pd
 from dash import dash_table, dcc, html
+
+ACCENT = "#C9A84C"
+BLUE = "#2563EB"
+TEAL = "#0D9488"
+ROSE = "#E11D48"
+
+# SELECT_FIELDS = [
+#     ("nm_cg", "CG"),
+#     ("nm_tecnico", "Técnico"),
+#     ("sg_pleito", "Sigla do Pleito"),
+# ]
+
+
+SELECT_FIELDS = [
+    ("de_fase", "Fase"),
+    ("de_tipo_operacao", "Tipo de Operação"),
+    ("nm_proponente", "Proponente"),
+    ("sg_fonte", "Fonte"),
+    ("de_esfera", "Esfera"),
+    ("nm_regiao", "Região"),
+    ("nm_setor", "Setor"),
+    ("nm_subsetor", "Subsetor"),
+    ("sys", "Sistema"),
+    ("nm_limite", "Limite"),
+    ("nm_cg", "CG"),
+    ("nm_tecnico", "Técnico"),
+    ("cd_pleito", "Código"),
+]
+
+
+
+
+DEFAULT_SELECTIONS = {}
 
 
 def metric_card(label: str, value: str, sub: str, color: str = "#2563EB") -> html.Div:
@@ -27,15 +63,44 @@ def section_head(title: str, subtitle: str = "") -> html.Div:
     )
 
 
-def _selection_dropdown(label: str, component_id: str) -> html.Div:
+def _empty_state(title: str, text: str) -> html.Div:
+    return glass_card(
+        cls="empty-state",
+        *[
+            html.Div(title, className="empty-title"),
+            html.P(text, className="empty-text"),
+        ],
+    )
+
+
+def _clean_series_for_options(df: pd.DataFrame, col: str) -> pd.Series:
+    if col not in df.columns:
+        return pd.Series(dtype="string")
+
+    s = df[col].astype("string")
+    s = s.fillna("Não informado").replace(["<NA>", "nan", "None", ""], "Não informado")
+    return s
+
+
+def _get_options(df: pd.DataFrame, col: str) -> list[dict]:
+    s = _clean_series_for_options(df, col)
+    vals = sorted([str(v) for v in s.dropna().unique().tolist() if str(v).strip() != ""])
+    return [{"label": v, "value": v} for v in vals]
+
+
+def _selection_dropdown(df: pd.DataFrame, col: str, label: str) -> html.Div:
+    options = _get_options(df, col)
+    option_values = {opt["value"] for opt in options}
+    default_values = [v for v in DEFAULT_SELECTIONS.get(col, []) if v in option_values]
+
     return html.Div(
         className="selection-item",
         children=[
             html.Label(label, className="filter-label"),
             dcc.Dropdown(
-                id=component_id,
-                options=[],
-                value=[],
+                id=f"carteira-ca-select-{col}",
+                options=options,
+                value=default_values,
                 multi=True,
                 placeholder=f"Escolha {label.lower()}...",
                 className="lovable-dropdown",
@@ -45,11 +110,48 @@ def _selection_dropdown(label: str, component_id: str) -> html.Div:
     )
 
 
-def carteira_analistas_page_layout(auth_component=None) -> html.Div:
+def _get_tabela_default_columns(df: pd.DataFrame) -> list[str]:
+    defaults = [
+        "sg_pleito",
+        "nm_cg",
+        "nm_tecnico",
+        "nm_proponente",
+        "nm_pleito",
+        "de_fase",
+        "de_tipo_operacao",
+        "sg_fonte",
+        "vl_financiamento_dolar",
+        "vl_contrapartida_dolar",
+        "de_esfera",
+        "nm_regiao",
+        "nm_setor",
+        "nm_subsetor",
+        "sys",
+        "nm_limite",
+    ]
+    return [col for col in defaults if col in df.columns]
+
+
+def carteira_analistas_page_layout(df_json_ca: str | None = None, auth_component=None) -> html.Div:
     children = []
 
     if auth_component is not None:
         children.append(auth_component)
+
+    if df_json_ca:
+        try:
+            df = pd.read_json(StringIO(df_json_ca), orient="split")
+        except Exception:
+            df = pd.DataFrame()
+    else:
+        df = pd.DataFrame()
+
+    has_data = not df.empty
+
+    selectors = [_selection_dropdown(df, col, label) for col, label in SELECT_FIELDS] if has_data else []
+
+    tabela_column_options = [{"label": col, "value": col} for col in df.columns] if has_data else []
+    tabela_default_columns = _get_tabela_default_columns(df) if has_data else []
 
     children.extend(
         [
@@ -77,7 +179,7 @@ def carteira_analistas_page_layout(auth_component=None) -> html.Div:
             ),
             html.Div(
                 id="preview-section-ca",
-                style={"display": "none"},
+                style={"display": "block" if has_data else "none"},
                 children=[
                     glass_card(
                         cls="section-card",
@@ -144,11 +246,7 @@ def carteira_analistas_page_layout(auth_component=None) -> html.Div:
                                                     "gridTemplateColumns": "repeat(auto-fit, minmax(220px, 1fr))",
                                                     "gap": "14px",
                                                 },
-                                                children=[
-                                                    _selection_dropdown("CG", "carteira-ca-select-nm_cg"),
-                                                    _selection_dropdown("Técnico", "carteira-ca-select-nm_tecnico"),
-                                                    _selection_dropdown("Sigla do Pleito", "carteira-ca-select-sg_pleito"),
-                                                ],
+                                                children=selectors,
                                             ),
                                         ],
                                     ),
@@ -315,8 +413,8 @@ def carteira_analistas_page_layout(auth_component=None) -> html.Div:
                                                     ),
                                                     dcc.Dropdown(
                                                         id="carteira-ca-column-selector",
-                                                        options=[],
-                                                        value=[],
+                                                        options=tabela_column_options,
+                                                        value=tabela_default_columns,
                                                         multi=True,
                                                         placeholder="Escolha as colunas da tabela...",
                                                         className="lovable-dropdown",
@@ -406,6 +504,16 @@ def carteira_analistas_page_layout(auth_component=None) -> html.Div:
                             ),
                         ],
                     ),
+                ],
+            ),
+            html.Div(
+                id="preview-section-ca-empty",
+                style={"display": "block" if not has_data else "none"},
+                children=[
+                    _empty_state(
+                        "Base não carregada",
+                        "Clique em 'Carregar página' para exibir a Carteira Ativa das coordenações gerais.",
+                    )
                 ],
             ),
         ]

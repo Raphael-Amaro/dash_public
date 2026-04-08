@@ -774,9 +774,19 @@ def build_filtered_carteira_df(
 
 def build_filtered_carteira_ca_df(
     df_json_ca,
+    de_fase=None,
+    de_tipo_operacao=None,
+    nm_proponente=None,
+    sg_fonte=None,
+    de_esfera=None,
+    nm_regiao=None,
+    nm_setor=None,
+    nm_subsetor=None,
+    sys=None,
+    nm_limite=None,
     nm_cg=None,
     nm_tecnico=None,
-    sg_pleito=None,
+    cd_pleito=None,
 ):
     if not df_json_ca:
         return pd.DataFrame()
@@ -786,26 +796,26 @@ def build_filtered_carteira_ca_df(
         return df
 
     filtros = {
+        "de_fase": de_fase,
+        "de_tipo_operacao": de_tipo_operacao,
+        "nm_proponente": nm_proponente,
+        "sg_fonte": sg_fonte,
+        "de_esfera": de_esfera,
+        "nm_regiao": nm_regiao,
+        "nm_setor": nm_setor,
+        "nm_subsetor": nm_subsetor,
+        "sys": sys,
+        "nm_limite": nm_limite,
         "nm_cg": nm_cg,
         "nm_tecnico": nm_tecnico,
-        "sg_pleito": sg_pleito,
-    }
-
-    alt_cols = {
-        "nm_cg": ["nm_cg", "NM_CG"],
-        "nm_tecnico": ["nm_tecnico", "NM_TECNICO"],
-        "sg_pleito": ["sg_pleito", "SG_PLEITO"],
+        "cd_pleito": cd_pleito,
     }
 
     out = df.copy()
 
-    for filtro_key, valores in filtros.items():
-        if not valores:
-            continue
-
-        col_encontrada = next((c for c in alt_cols[filtro_key] if c in out.columns), None)
-        if col_encontrada:
-            out = out[out[col_encontrada].astype("string").isin([str(v) for v in valores])]
+    for col, valores in filtros.items():
+        if col in out.columns and valores:
+            out = out[out[col].astype("string").isin([str(v) for v in valores])]
 
     return out
 
@@ -1884,11 +1894,12 @@ def update_nav_classes(pathname):
 @callback(
     Output("page-content", "children"),
     Input("url", "pathname"),
+    Input("global-df-json-ca", "data"),
     State("global-df-json", "data"),
     State("global-selected-columns", "data"),
     State("global-filename", "data"),
 )
-def render_page(pathname, df_json, selected_columns, filename):
+def render_page(pathname, df_json_ca, df_json, selected_columns, filename):
     if not is_authenticated():
         return unauthenticated_page_layout()
 
@@ -1897,7 +1908,10 @@ def render_page(pathname, df_json, selected_columns, filename):
     if pathname == "/bi":
         return bi_page_layout(df_json, selected_columns, filename)
     if pathname == "/carteira-cgs":
-        return carteira_analistas_page_layout(auth_component=auth_status_card())
+        return carteira_analistas_page_layout(
+            df_json_ca=df_json_ca,
+            auth_component=auth_status_card(),
+        )
     return home_page_layout(df_json)
 
 
@@ -2041,9 +2055,6 @@ def load_shared_file(n_clicks):
     Output("summary-cards-ca", "children"),
     Output("preview-section-ca", "style"),
     Output("carteira-ca-loaded", "data"),
-    Output("carteira-ca-select-nm_cg", "options"),
-    Output("carteira-ca-select-nm_tecnico", "options"),
-    Output("carteira-ca-select-sg_pleito", "options"),
     Output("carteira-ca-column-selector", "options"),
     Output("carteira-ca-column-selector", "value"),
     Input("btn-load-ca", "n_clicks"),
@@ -2069,9 +2080,6 @@ def load_shared_file_ca(n_clicks):
             [],
             {"display": "none"},
             False,
-            [],
-            [],
-            [],
             [],
             [],
         )
@@ -2106,22 +2114,6 @@ def load_shared_file_ca(n_clicks):
             metric_card("Arquivo", filename, "base ativa", ROSE),
         ]
 
-        def build_options(df_local: pd.DataFrame, possible_cols: list[str]):
-            col_name = next((c for c in possible_cols if c in df_local.columns), None)
-            if not col_name:
-                return []
-
-            vals = (
-                df_local[col_name]
-                .astype("string")
-                .fillna("Não informado")
-                .replace(["<NA>", "nan", "None", ""], "Não informado")
-                .drop_duplicates()
-                .sort_values()
-                .tolist()
-            )
-            return [{"label": str(v), "value": str(v)} for v in vals]
-
         col_options = [{"label": str(c), "value": str(c)} for c in df.columns]
         default_cols = list(df.columns)
 
@@ -2137,9 +2129,6 @@ def load_shared_file_ca(n_clicks):
             summary,
             {"display": "block"},
             True,
-            build_options(df, ["nm_cg", "NM_CG"]),
-            build_options(df, ["nm_tecnico", "NM_TECNICO"]),
-            build_options(df, ["sg_pleito", "SG_PLEITO"]),
             col_options,
             default_cols,
         )
@@ -2159,23 +2148,30 @@ def load_shared_file_ca(n_clicks):
             False,
             [],
             [],
-            [],
-            [],
-            [],
         )
 
 
 @callback(
-    Output("carteira-ca-select-nm_cg", "value"),
-    Output("carteira-ca-select-nm_tecnico", "value"),
-    Output("carteira-ca-select-sg_pleito", "value"),
-    Input("carteira-ca-btn-clear-selections", "n_clicks"),
+    Output("carteira-ca-select-de_fase", "value", allow_duplicate=True),
+    Output("carteira-ca-select-de_tipo_operacao", "value", allow_duplicate=True),
+    Output("carteira-ca-select-nm_proponente", "value", allow_duplicate=True),
+    Output("carteira-ca-select-sg_fonte", "value", allow_duplicate=True),
+    Output("carteira-ca-select-de_esfera", "value", allow_duplicate=True),
+    Output("carteira-ca-select-nm_regiao", "value", allow_duplicate=True),
+    Output("carteira-ca-select-nm_setor", "value", allow_duplicate=True),
+    Output("carteira-ca-select-nm_subsetor", "value", allow_duplicate=True),
+    Output("carteira-ca-select-sys", "value", allow_duplicate=True),
+    Output("carteira-ca-select-nm_limite", "value", allow_duplicate=True),
+    Output("carteira-ca-select-nm_cg", "value", allow_duplicate=True),
+    Output("carteira-ca-select-nm_tecnico", "value", allow_duplicate=True),
+    Output("carteira-ca-select-cd_pleito", "value", allow_duplicate=True),
+    Input("carteira-ca-btn-clear-selections", "n_clicks", allow_optional=True),
     prevent_initial_call=True,
 )
 def clear_carteira_ca_selections(n_clicks):
     if not n_clicks:
         raise PreventUpdate
-    return [], [], []
+    return [], [], [], [], [], [], [], [], [], [], [], [], []
 
 
 @callback(
@@ -2187,19 +2183,39 @@ def clear_carteira_ca_selections(n_clicks):
     Output("preview-table-ca", "data"),
     Output("preview-table-ca", "columns"),
     Input("global-df-json-ca", "data"),
-    Input("carteira-ca-select-nm_cg", "value"),
-    Input("carteira-ca-select-nm_tecnico", "value"),
-    Input("carteira-ca-select-sg_pleito", "value"),
-    Input("carteira-ca-column-selector", "value"),
+    Input("carteira-ca-select-de_fase", "value", allow_optional=True),
+    Input("carteira-ca-select-de_tipo_operacao", "value", allow_optional=True),
+    Input("carteira-ca-select-nm_proponente", "value", allow_optional=True),
+    Input("carteira-ca-select-sg_fonte", "value", allow_optional=True),
+    Input("carteira-ca-select-de_esfera", "value", allow_optional=True),
+    Input("carteira-ca-select-nm_regiao", "value", allow_optional=True),
+    Input("carteira-ca-select-nm_setor", "value", allow_optional=True),
+    Input("carteira-ca-select-nm_subsetor", "value", allow_optional=True),
+    Input("carteira-ca-select-sys", "value", allow_optional=True),
+    Input("carteira-ca-select-nm_limite", "value", allow_optional=True),
+    Input("carteira-ca-select-nm_cg", "value", allow_optional=True),
+    Input("carteira-ca-select-nm_tecnico", "value", allow_optional=True),
+    Input("carteira-ca-select-cd_pleito", "value", allow_optional=True),
+    Input("carteira-ca-column-selector", "value", allow_optional=True),
     State("global-filename-ca", "data"),
     State("carteira-ca-loaded", "data"),
     prevent_initial_call=True,
 )
 def update_carteira_ca_views(
     df_json_ca,
+    de_fase,
+    de_tipo_operacao,
+    nm_proponente,
+    sg_fonte,
+    de_esfera,
+    nm_regiao,
+    nm_setor,
+    nm_subsetor,
+    sys,
+    nm_limite,
     nm_cg,
     nm_tecnico,
-    sg_pleito,
+    cd_pleito,
     selected_columns,
     filename_ca,
     carteira_ca_loaded,
@@ -2210,9 +2226,19 @@ def update_carteira_ca_views(
     df_full = pd.read_json(StringIO(df_json_ca), orient="split")
     df_filtrado = build_filtered_carteira_ca_df(
         df_json_ca,
+        de_fase=de_fase,
+        de_tipo_operacao=de_tipo_operacao,
+        nm_proponente=nm_proponente,
+        sg_fonte=sg_fonte,
+        de_esfera=de_esfera,
+        nm_regiao=nm_regiao,
+        nm_setor=nm_setor,
+        nm_subsetor=nm_subsetor,
+        sys=sys,
+        nm_limite=nm_limite,
         nm_cg=nm_cg,
         nm_tecnico=nm_tecnico,
-        sg_pleito=sg_pleito,
+        cd_pleito=cd_pleito,
     )
 
     total_registros = len(df_filtrado)
@@ -2308,20 +2334,40 @@ def update_carteira_ca_selected_count(options, selected):
 
 @callback(
     Output("carteira-ca-download-excel", "data"),
-    Input("carteira-ca-btn-export", "n_clicks"),
-    State("carteira-ca-select-nm_cg", "value"),
-    State("carteira-ca-select-nm_tecnico", "value"),
-    State("carteira-ca-select-sg_pleito", "value"),
-    State("carteira-ca-column-selector", "value"),
+    Input("carteira-ca-btn-export", "n_clicks", allow_optional=True),
+    State("carteira-ca-select-de_fase", "value", allow_optional=True),
+    State("carteira-ca-select-de_tipo_operacao", "value", allow_optional=True),
+    State("carteira-ca-select-nm_proponente", "value", allow_optional=True),
+    State("carteira-ca-select-sg_fonte", "value", allow_optional=True),
+    State("carteira-ca-select-de_esfera", "value", allow_optional=True),
+    State("carteira-ca-select-nm_regiao", "value", allow_optional=True),
+    State("carteira-ca-select-nm_setor", "value", allow_optional=True),
+    State("carteira-ca-select-nm_subsetor", "value", allow_optional=True),
+    State("carteira-ca-select-sys", "value", allow_optional=True),
+    State("carteira-ca-select-nm_limite", "value", allow_optional=True),
+    State("carteira-ca-select-nm_cg", "value", allow_optional=True),
+    State("carteira-ca-select-nm_tecnico", "value", allow_optional=True),
+    State("carteira-ca-select-cd_pleito", "value", allow_optional=True),
+    State("carteira-ca-column-selector", "value", allow_optional=True),
     State("global-df-json-ca", "data"),
     State("carteira-ca-loaded", "data"),
     prevent_initial_call=True,
 )
 def export_carteira_ca_excel(
     n_clicks,
+    de_fase,
+    de_tipo_operacao,
+    nm_proponente,
+    sg_fonte,
+    de_esfera,
+    nm_regiao,
+    nm_setor,
+    nm_subsetor,
+    sys,
+    nm_limite,
     nm_cg,
     nm_tecnico,
-    sg_pleito,
+    cd_pleito,
     selected_columns,
     df_json_ca,
     carteira_ca_loaded,
@@ -2331,9 +2377,19 @@ def export_carteira_ca_excel(
 
     df = build_filtered_carteira_ca_df(
         df_json_ca,
+        de_fase=de_fase,
+        de_tipo_operacao=de_tipo_operacao,
+        nm_proponente=nm_proponente,
+        sg_fonte=sg_fonte,
+        de_esfera=de_esfera,
+        nm_regiao=nm_regiao,
+        nm_setor=nm_setor,
+        nm_subsetor=nm_subsetor,
+        sys=sys,
+        nm_limite=nm_limite,
         nm_cg=nm_cg,
         nm_tecnico=nm_tecnico,
-        sg_pleito=sg_pleito,
+        cd_pleito=cd_pleito,
     )
 
     if df.empty:
