@@ -813,9 +813,19 @@ def build_filtered_carteira_ca_df(
 
     out = df.copy()
 
+    # normaliza os campos usados nos filtros
+    for col in filtros.keys():
+        if col in out.columns:
+            out[col] = (
+                out[col]
+                .astype("string")
+                .fillna("Não informado")
+                .replace(["<NA>", "nan", "None", ""], "Não informado")
+            )
+
     for col, valores in filtros.items():
         if col in out.columns and valores:
-            out = out[out[col].astype("string").isin([str(v) for v in valores])]
+            out = out[out[col].isin([str(v) for v in valores])]
 
     return out
 
