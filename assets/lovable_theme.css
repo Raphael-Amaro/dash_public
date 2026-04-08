@@ -158,6 +158,7 @@ pre, code { font-family: 'JetBrains Mono', monospace; }
 .nav-dot-blue  { background: var(--primary); }
 .nav-dot-teal  { background: var(--teal); }
 .nav-dot-rose  { background: var(--rose); }
+.nav-dot-violet  { background: var(--violet); }
 
 /* Footer */
 .sidebar-footer {
