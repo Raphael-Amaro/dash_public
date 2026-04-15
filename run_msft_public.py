@@ -302,6 +302,7 @@ def _prep_resolucao_df(
     """
     Prepara a base da aba 'Validade da Resolução':
     - aplica filtros globais da página;
+    - mantém somente operações na fase Aprovado;
     - converte dt_validade_recomendacao;
     - calcula dias_para_vencer;
     - aplica o horizonte selecionado.
@@ -312,19 +313,35 @@ def _prep_resolucao_df(
         return pd.DataFrame()
 
     df = df.copy()
+
+    # mantém somente fase Aprovado nesta aba
+    if "de_fase" in df.columns:
+        df = df[df["de_fase"].fillna("").astype(str).str.strip().str.lower().eq("aprovado")]
+
+    if df.empty:
+        return pd.DataFrame()
+
     df["dt_validade_recomendacao"] = pd.to_datetime(
         df["dt_validade_recomendacao"], errors="coerce"
     )
     df = df[df["dt_validade_recomendacao"].notna()]
+
+    if df.empty:
+        return pd.DataFrame()
 
     hoje = pd.Timestamp(date.today())
     df["dias_para_vencer"] = (df["dt_validade_recomendacao"] - hoje).dt.days
 
     if horizonte == "vencidas":
         df = df[df["dias_para_vencer"] < 0]
-    elif horizonte != "todas":
-        dias = int(horizonte)
-        df = df[df["dias_para_vencer"] <= dias]
+    elif horizonte == "30":
+        df = df[(df["dias_para_vencer"] >= 0) & (df["dias_para_vencer"] < 30)]
+    elif horizonte == "90":
+        df = df[(df["dias_para_vencer"] >= 0) & (df["dias_para_vencer"] < 90)]
+    elif horizonte == "180":
+        df = df[(df["dias_para_vencer"] >= 0) & (df["dias_para_vencer"] < 180)]
+    elif horizonte == "todas":
+        pass
 
     return df.sort_values("dias_para_vencer")
 
@@ -2511,7 +2528,7 @@ def export_carteira_ca_excel(
     Output("ca-acomp-kpi-cgs", "children"),
     Input("carteira-ca-tabs", "value"),
     Input("global-df-json-ca", "data"),
-    *(Input(f"carteira-ca-select-{col}", "value") for col, _ in SELECT_FIELDS_CA),
+    *(Input(f"carteira-ca-select-{col}", "value", allow_optional=True) for col, _ in SELECT_FIELDS_CA),
     prevent_initial_call=True,
 )
 def update_acomp_kpis(tab, df_json_ca, *filter_values):
@@ -2542,7 +2559,7 @@ def update_acomp_kpis(tab, df_json_ca, *filter_values):
     Output("ca-acomp-fig-tecnico", "figure"),
     Input("carteira-ca-tabs", "value"),
     Input("global-df-json-ca", "data"),
-    *(Input(f"carteira-ca-select-{col}", "value") for col, _ in SELECT_FIELDS_CA),
+    *(Input(f"carteira-ca-select-{col}", "value", allow_optional=True) for col, _ in SELECT_FIELDS_CA),
     prevent_initial_call=True,
 )
 def update_acomp_fig_tecnico(tab, df_json_ca, *filter_values):
@@ -2599,7 +2616,7 @@ def update_acomp_fig_tecnico(tab, df_json_ca, *filter_values):
     Output("ca-acomp-fig-cg", "figure"),
     Input("carteira-ca-tabs", "value"),
     Input("global-df-json-ca", "data"),
-    *(Input(f"carteira-ca-select-{col}", "value") for col, _ in SELECT_FIELDS_CA),
+    *(Input(f"carteira-ca-select-{col}", "value", allow_optional=True) for col, _ in SELECT_FIELDS_CA),
     prevent_initial_call=True,
 )
 def update_acomp_fig_cg(tab, df_json_ca, *filter_values):
@@ -2648,7 +2665,7 @@ def update_acomp_fig_cg(tab, df_json_ca, *filter_values):
     Output("ca-acomp-fig-fase-tecnico", "figure"),
     Input("carteira-ca-tabs", "value"),
     Input("global-df-json-ca", "data"),
-    *(Input(f"carteira-ca-select-{col}", "value") for col, _ in SELECT_FIELDS_CA),
+    *(Input(f"carteira-ca-select-{col}", "value", allow_optional=True) for col, _ in SELECT_FIELDS_CA),
     prevent_initial_call=True,
 )
 def update_acomp_fig_fase_tecnico(tab, df_json_ca, *filter_values):
@@ -2710,7 +2727,7 @@ def update_acomp_fig_fase_tecnico(tab, df_json_ca, *filter_values):
     Output("ca-acomp-fig-setor-cg", "figure"),
     Input("carteira-ca-tabs", "value"),
     Input("global-df-json-ca", "data"),
-    *(Input(f"carteira-ca-select-{col}", "value") for col, _ in SELECT_FIELDS_CA),
+    *(Input(f"carteira-ca-select-{col}", "value", allow_optional=True) for col, _ in SELECT_FIELDS_CA),
     prevent_initial_call=True,
 )
 def update_acomp_fig_setor_cg(tab, df_json_ca, *filter_values):
@@ -2769,11 +2786,12 @@ def update_acomp_fig_setor_cg(tab, df_json_ca, *filter_values):
     Output("ca-res-kpi-vencidas", "children"),
     Output("ca-res-kpi-30dias", "children"),
     Output("ca-res-kpi-90dias", "children"),
+    Output("ca-res-kpi-180dias", "children"),
     Output("ca-res-kpi-ok", "children"),
     Input("carteira-ca-tabs", "value"),
     Input("ca-res-horizonte", "value"),
     Input("global-df-json-ca", "data"),
-    *(Input(f"carteira-ca-select-{col}", "value") for col, _ in SELECT_FIELDS_CA),
+    *(Input(f"carteira-ca-select-{col}", "value", allow_optional=True) for col, _ in SELECT_FIELDS_CA),
     prevent_initial_call=True,
 )
 def update_res_kpis(tab, horizonte, df_json_ca, *filter_values):
@@ -2782,9 +2800,12 @@ def update_res_kpis(tab, horizonte, df_json_ca, *filter_values):
 
     df = _apply_ca_filters(df_json_ca, filter_values)
 
+    if "de_fase" in df.columns:
+        df = df[df["de_fase"].fillna("").astype(str).str.strip().str.lower().eq("aprovado")]
+
     if df.empty or "dt_validade_recomendacao" not in df.columns:
         empty = kpi_block("—", "—", "sem dados")
-        return empty, empty, empty, empty
+        return empty, empty, empty, empty, empty
 
     df = df.copy()
     df["dt_validade_recomendacao"] = pd.to_datetime(
@@ -2794,7 +2815,7 @@ def update_res_kpis(tab, horizonte, df_json_ca, *filter_values):
 
     if df.empty:
         empty = kpi_block("—", "—", "sem dados")
-        return empty, empty, empty, empty
+        return empty, empty, empty, empty, empty
 
     hoje = pd.Timestamp(date.today())
     df["dias"] = (df["dt_validade_recomendacao"] - hoje).dt.days
@@ -2802,13 +2823,15 @@ def update_res_kpis(tab, horizonte, df_json_ca, *filter_values):
     n_vencidas = int((df["dias"] < 0).sum())
     n_30 = int(((df["dias"] >= 0) & (df["dias"] < 30)).sum())
     n_90 = int(((df["dias"] >= 0) & (df["dias"] < 90)).sum())
-    n_ok = int((df["dias"] >= 90).sum())
+    n_180 = int(((df["dias"] >= 0) & (df["dias"] < 180)).sum())
+    n_ok = int((df["dias"] >= 180).sum())
 
     return (
-        kpi_block("Vencidas", fmt_int_br(n_vencidas), "resolução expirada"),
+        kpi_block("Vencidas", fmt_int_br(n_vencidas), "resolução vencida"),
         kpi_block("Vencem em 30 dias", fmt_int_br(n_30), "atenção imediata"),
-        kpi_block("Vencem em 90 dias", fmt_int_br(n_90), "monitorar"),
-        kpi_block("Dentro do prazo", fmt_int_br(n_ok), "validade > 90 dias"),
+        kpi_block("Vencem em 90 dias", fmt_int_br(n_90), "atenção moderada"),
+        kpi_block("Vencem em 180 dias", fmt_int_br(n_180), "monitorar"),
+        kpi_block("Dentro do prazo", fmt_int_br(n_ok), "validade > 180 dias"),
     )
 
 
@@ -2817,9 +2840,10 @@ def update_res_kpis(tab, horizonte, df_json_ca, *filter_values):
     Input("carteira-ca-tabs", "value"),
     Input("ca-res-horizonte", "value"),
     Input("global-df-json-ca", "data"),
-    *(Input(f"carteira-ca-select-{col}", "value") for col, _ in SELECT_FIELDS_CA),
+    *(Input(f"carteira-ca-select-{col}", "value", allow_optional=True) for col, _ in SELECT_FIELDS_CA),
     prevent_initial_call=True,
 )
+
 def update_res_timeline(tab, horizonte, df_json_ca, *filter_values):
     if tab != "resolucao" or not df_json_ca:
         raise PreventUpdate
@@ -2830,30 +2854,69 @@ def update_res_timeline(tab, horizonte, df_json_ca, *filter_values):
         return EMPTY_FIG
 
     df = df.copy()
-    df["mes_ano"] = df["dt_validade_recomendacao"].dt.to_period("M").astype(str)
+    df["dt_validade_recomendacao"] = pd.to_datetime(df["dt_validade_recomendacao"], errors="coerce")
+    df = df[df["dt_validade_recomendacao"].notna()]
 
-    grp = df.groupby("mes_ano").size().reset_index(name="qtd").sort_values("mes_ano")
+    if df.empty:
+        return EMPTY_FIG
+
+    # primeiro dia do mês de cada validade
+    df["mes_ref"] = df["dt_validade_recomendacao"].dt.to_period("M").dt.to_timestamp()
+
+    grp = df.groupby("mes_ref").size().reset_index(name="qtd").sort_values("mes_ref")
     if grp.empty:
         return EMPTY_FIG
 
-    hoje_str = pd.Timestamp(date.today()).to_period("M").strftime("%Y-%m")
-    cores = [ROSE if m <= hoje_str else ACCENT for m in grp["mes_ano"]]
+    # preenche meses sem ocorrência para a linha do tempo ficar contínua
+    mes_inicio = grp["mes_ref"].min()
+    mes_fim = grp["mes_ref"].max()
+    faixa_meses = pd.date_range(start=mes_inicio, end=mes_fim, freq="MS")
+
+    grp = (
+        pd.DataFrame({"mes_ref": faixa_meses})
+        .merge(grp, on="mes_ref", how="left")
+        .fillna({"qtd": 0})
+    )
+    grp["qtd"] = grp["qtd"].astype(int)
+
+    meses_pt = {
+        1: "jan", 2: "fev", 3: "mar", 4: "abr", 5: "mai", 6: "jun",
+        7: "jul", 8: "ago", 9: "set", 10: "out", 11: "nov", 12: "dez",
+    }
+
+    grp["ano"] = grp["mes_ref"].dt.year.astype(str)
+    grp["mes_nome"] = grp["mes_ref"].dt.month.map(meses_pt)
+    grp["mes_label"] = grp["mes_ref"].apply(lambda d: f"{meses_pt[d.month]}<br>{d.year}")
+
+    mes_atual = pd.Timestamp(date.today()).replace(day=1)
+    cores = [ROSE if d <= mes_atual else ACCENT for d in grp["mes_ref"]]
 
     fig = go.Figure(
         go.Bar(
-            x=grp["mes_ano"],
+            x=grp["mes_label"],
             y=grp["qtd"],
             marker_color=cores,
             marker_line_width=0,
-            hovertemplate="<b>%{x}</b><br>%{y} operações<extra></extra>",
+            customdata=grp[["ano", "mes_nome"]].to_numpy(),
+            hovertemplate=(
+                "Ano: %{customdata[0]}<br>"
+                "Mês: %{customdata[1]}<br>"
+                "Quantidade de operações: %{y}"
+                "<extra></extra>"
+            ),
         )
     )
 
     apply_layout(
         fig,
-        xaxis=merge_dict(XAXIS_DEF, tickangle=-30),
-        yaxis=merge_dict(YAXIS_DEF, dtick=1),
-        margin=dict(t=20, r=20, b=70, l=50),
+        xaxis=merge_dict(
+            XAXIS_DEF,
+            type="category",
+            tickangle=0,
+            automargin=True,
+        ),
+        yaxis=merge_dict(YAXIS_DEF, dtick=1, title=None),
+        margin=dict(t=20, r=20, b=80, l=50),
     )
     return fig
 
@@ -2866,7 +2929,7 @@ def update_res_timeline(tab, horizonte, df_json_ca, *filter_values):
     Input("ca-res-horizonte", "value"),
     Input("ca-res-column-selector", "value"),
     Input("global-df-json-ca", "data"),
-    *(Input(f"carteira-ca-select-{col}", "value") for col, _ in SELECT_FIELDS_CA),
+    *(Input(f"carteira-ca-select-{col}", "value", allow_optional=True) for col, _ in SELECT_FIELDS_CA),
     prevent_initial_call=True,
 )
 def update_res_table(tab, horizonte, selected_cols, df_json_ca, *filter_values):
@@ -2887,8 +2950,17 @@ def update_res_table(tab, horizonte, selected_cols, df_json_ca, *filter_values):
     valid_cols = [c for c in selected_cols if c in df.columns]
     df_out = df[valid_cols].copy()
 
-    for col in df_out.select_dtypes(include=["datetime64[ns]", "datetimetz"]).columns:
-        df_out[col] = df_out[col].dt.strftime("%d/%m/%Y")
+    # for col in df_out.select_dtypes(include=["datetime64[ns]", "datetimetz"]).columns:
+    #     df_out[col] = df_out[col].dt.strftime("%d/%m/%Y")
+    date_cols = [
+    "dt_primeira_cofiex",
+    "dt_validade_recomendacao",
+]
+
+    for col in df_out.columns:
+        if str(col).startswith("dt_"):
+            df_out[col] = pd.to_datetime(df_out[col], errors="coerce").dt.strftime("%d/%m/%Y")
+            df_out[col] = df_out[col].where(df_out[col].notna(), None)
 
     df_out = df_out.where(pd.notnull(df_out), None)
 
@@ -2905,7 +2977,7 @@ def update_res_table(tab, horizonte, selected_cols, df_json_ca, *filter_values):
     State("ca-res-horizonte", "value"),
     State("ca-res-column-selector", "value"),
     State("global-df-json-ca", "data"),
-    *(State(f"carteira-ca-select-{col}", "value") for col, _ in SELECT_FIELDS_CA),
+    *(State(f"carteira-ca-select-{col}", "value", allow_optional=True) for col, _ in SELECT_FIELDS_CA),
     prevent_initial_call=True,
 )
 def export_res_excel(n_clicks, horizonte, selected_cols, df_json_ca, *filter_values):

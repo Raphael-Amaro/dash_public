@@ -480,6 +480,20 @@ pre, code { font-family: 'JetBrains Mono', monospace; }
   border-radius: 6px;
 }
 
+.painel-radio-responsivo {
+  display: flex;
+  justify-content: center;
+  align-items: stretch;
+  flex-wrap: wrap;
+  width: 100%;
+  gap: 8px;
+}
+
+.painel-radio-responsivo .painel-radio-label {
+  flex: 1 1 180px;
+  text-align: center;
+}
+
 /* ── PAINEL: SLIDER ──────────────────────────────────────────────────────── */
 .painel-slider .rc-slider-track { background: var(--accent) !important; }
 .painel-slider .rc-slider-handle {
