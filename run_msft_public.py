@@ -1,3 +1,30 @@
+"""
+SEAID / COFIEX — Painel de Financiamentos Externos
+=======================================================
+Versão : 2.1
+Projeto: PEI 19 / BI Gerencial SUFIN — Ministério do Planejamento e Orçamento
+
+Histórico de versões
+--------------------
+v2.1 (abr/2026)
+  - Aba Acompanhamento da Carteira Ativa: KPIs dinâmicos, gráficos por técnico,
+    CG, fase e setor integrados ao arquivo principal
+  - Aba Validade da Resolução: alertas por horizonte temporal (vencidas / 30 / 90
+    / 180 dias / todas), timeline mensal e tabela exportável com highlight por urgência
+  - Ajustes defensivos em callbacks com dados nulos
+  - Docstring e versionamento adicionados
+
+v2.0 (abr/2026)
+  - Autenticação Microsoft via MSAL (App Registration)
+  - Cache com Flask-Caching + Parquet (TTL 10 min)
+  - Mapa de calor por UF (GeoJSON)
+  - Carteira Ativa das CGs como módulo separado (carteira_analistas.py)
+  - Carregamento lazy da base principal
+
+v1.0 (mar/2026)
+  - Versão inicial: Painel Analítico + PyGWalker + Gestão de Dados
+"""
+
 from __future__ import annotations
 
 import json
@@ -25,11 +52,6 @@ from painel import painel_page_layout
 from carteira_analistas import carteira_analistas_page_layout
 
 load_dotenv()
-
-"""
-SEAID / COFIEX — Painel de Financiamentos Externos
-Versão 2.0 — Painel Analítico + PyGWalker + Gestão de Dados
-"""
 
 # ── CONFIGURAÇÃO ──────────────────────────────────────────────────────────────
 
@@ -2950,13 +2972,6 @@ def update_res_table(tab, horizonte, selected_cols, df_json_ca, *filter_values):
     valid_cols = [c for c in selected_cols if c in df.columns]
     df_out = df[valid_cols].copy()
 
-    # for col in df_out.select_dtypes(include=["datetime64[ns]", "datetimetz"]).columns:
-    #     df_out[col] = df_out[col].dt.strftime("%d/%m/%Y")
-    date_cols = [
-    "dt_primeira_cofiex",
-    "dt_validade_recomendacao",
-]
-
     for col in df_out.columns:
         if str(col).startswith("dt_"):
             df_out[col] = pd.to_datetime(df_out[col], errors="coerce").dt.strftime("%d/%m/%Y")
@@ -2965,7 +2980,6 @@ def update_res_table(tab, horizonte, selected_cols, df_json_ca, *filter_values):
     df_out = df_out.where(pd.notnull(df_out), None)
 
     columns = [{"name": str(c), "id": str(c)} for c in df_out.columns]
-    # count_text = f"{fmt_int_br(len(valid_cols))} de {fmt_int_br(len(df.columns))} colunas"
     count_text = f"{fmt_int_br(len(valid_cols))} colunas exibidas"
 
     return df_out.to_dict("records"), columns, count_text
