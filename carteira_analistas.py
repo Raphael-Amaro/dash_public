@@ -84,6 +84,7 @@ def _selection_dropdown(df: pd.DataFrame, col: str, label: str) -> html.Div:
     options = _get_options(df, col)
     option_values = {opt["value"] for opt in options}
     default_values = [v for v in DEFAULT_SELECTIONS.get(col, []) if v in option_values]
+
     return html.Div(
         className="selection-item",
         children=[
@@ -95,6 +96,7 @@ def _selection_dropdown(df: pd.DataFrame, col: str, label: str) -> html.Div:
                 multi=True,
                 placeholder=f"Escolha {label.lower()}...",
                 className="lovable-dropdown",
+                disabled=df.empty,   # <- importante
             ),
         ],
         style={"minWidth": "220px"},
@@ -113,9 +115,9 @@ def _get_tabela_default_columns(df: pd.DataFrame) -> list[str]:
 
 def _get_resolucao_default_columns(df: pd.DataFrame) -> list[str]:
     defaults = [
-        "sg_pleito", "nm_pleito", "nm_proponente", "nm_cg", "nm_tecnico",
-        "de_fase", "dt_validade_recomendacao", "dt_primeira_cofiex",
-        "sg_fonte", "vl_financiamento_dolar", "de_esfera", "nm_regiao",
+        "nm_tecnico", "nm_cg", "cd_pleito", "nm_pleito", "nm_proponente",
+        "dt_primeira_cofiex", "dt_validade_recomendacao",
+        "sg_fonte", 
     ]
     return [col for col in defaults if col in df.columns]
 
@@ -256,7 +258,8 @@ def _resolucao_tab_content(df: pd.DataFrame) -> html.Div:
                     html.Div(id="ca-res-kpi-vencidas",   className="metric-card", style={"borderTopColor": ROSE}),
                     html.Div(id="ca-res-kpi-30dias",      className="metric-card", style={"borderTopColor": "#F97316"}),
                     html.Div(id="ca-res-kpi-90dias",      className="metric-card", style={"borderTopColor": ACCENT}),
-                    html.Div(id="ca-res-kpi-ok",          className="metric-card", style={"borderTopColor": TEAL}),
+                    html.Div(id="ca-res-kpi-180dias",      className="metric-card", style={"borderTopColor": TEAL}),
+                    html.Div(id="ca-res-kpi-ok",          className="metric-card", style={"borderTopColor": BLUE}),
                 ],
             ),
 
@@ -265,32 +268,33 @@ def _resolucao_tab_content(df: pd.DataFrame) -> html.Div:
                 cls="section-card",
                 *[
                     html.Div(
-                        style={
-                            "display": "flex",
-                            "alignItems": "center",
-                            "gap": "20px",
-                            "flexWrap": "wrap",
-                        },
+                        style={"width": "100%"},
                         children=[
+                            html.Label("Horizonte de alerta", className="filter-label"),
                             html.Div(
+                                style={
+                                    "display": "flex",
+                                    "justifyContent": "center",
+                                    "width": "100%",
+                                    "marginTop": "12px",
+                                },
                                 children=[
-                                    html.Label("Horizonte de alerta", className="filter-label"),
                                     dcc.RadioItems(
                                         id="ca-res-horizonte",
                                         options=[
-                                            {"label": "Vencidas",       "value": "vencidas"},
-                                            {"label": "Próximos 30 dias",  "value": "30"},
-                                            {"label": "Próximos 90 dias",  "value": "90"},
+                                            {"label": "Vencidas", "value": "vencidas"},
+                                            {"label": "Próximos 30 dias", "value": "30"},
+                                            {"label": "Próximos 90 dias", "value": "90"},
                                             {"label": "Próximos 180 dias", "value": "180"},
-                                            {"label": "Todas",             "value": "todas"},
+                                            {"label": "Todas", "value": "todas"},
                                         ],
-                                        value="90",
+                                        value="180",
                                         inline=True,
-                                        className="painel-radio",
+                                        className="painel-radio painel-radio-responsivo",
                                         inputClassName="painel-radio-input",
                                         labelClassName="painel-radio-label",
-                                    ),
-                                ]
+                                    )
+                                ],
                             ),
                         ],
                     ),
@@ -301,8 +305,8 @@ def _resolucao_tab_content(df: pd.DataFrame) -> html.Div:
             glass_card(
                 *[
                     section_head(
-                        "Validades por Mês",
-                        "Quantidade de resoluções com validade expirando em cada mês",
+                        "Validade das Resoluções",
+                        "Quantidade de resoluções em cada mês",
                     ),
                     dcc.Loading(
                         type="dot", color=ACCENT,
@@ -456,7 +460,8 @@ def carteira_analistas_page_layout(
 
     has_data = not df.empty
 
-    selectors = [_selection_dropdown(df, col, label) for col, label in SELECT_FIELDS] if has_data else []
+    # selectors = [_selection_dropdown(df, col, label) for col, label in SELECT_FIELDS] if has_data else []
+    selectors = [_selection_dropdown(df, col, label) for col, label in SELECT_FIELDS]
     tabela_column_options = [{"label": col, "value": col} for col in df.columns] if has_data else []
     tabela_default_columns = _get_tabela_default_columns(df) if has_data else []
 
