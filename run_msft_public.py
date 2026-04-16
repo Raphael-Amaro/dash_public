@@ -1135,8 +1135,6 @@ def chart_fonte(df: pd.DataFrame, metrica: str) -> go.Figure:
     grp["qtd_fmt"] = grp["qtd"].apply(fmt_int_br)
     grp["proj_fmt"] = grp["proj"].apply(fmt_int_br)
 
-    customdata = grp[["valor_fmt", "qtd_fmt", "proj_fmt"]].to_numpy()
-
     fig = go.Figure(
         go.Pie(
             labels=grp["fonte"],
@@ -1147,13 +1145,18 @@ def chart_fonte(df: pd.DataFrame, metrica: str) -> go.Figure:
                 line=dict(color="white", width=2),
             ),
             textinfo="label+percent",
-            customdata=customdata,
+            hovertext=[
+                (
+                    f"Valor de financiamento: US$ {valor}<br>"
+                    f"Quantidade de operações: {qtd}<br>"
+                    f"Quantidade de projetos: {proj}"
+                )
+                for valor, qtd, proj in zip(grp["valor_fmt"], grp["qtd_fmt"], grp["proj_fmt"])
+            ],
             hovertemplate=(
                 "<b>%{label}</b><br>"
-                "Valor de financiamento: US$ %{customdata[0]}<br>"
-                "Quantidade de operações: %{customdata[1]}<br>"
-                "Quantidade de projetos: %{customdata[2]}<br>"
-                "%{percent}<extra></extra>"
+                "%{hovertext}<br>"
+                "Percentual: %{percent}<extra></extra>"
             ),
         )
     )
@@ -1190,8 +1193,6 @@ def chart_fase_percentual(df: pd.DataFrame, metrica: str) -> go.Figure:
     grp["qtd_fmt"] = grp["qtd"].apply(fmt_int_br)
     grp["proj_fmt"] = grp["proj"].apply(fmt_int_br)
 
-    customdata = grp[["valor_fmt", "qtd_fmt", "proj_fmt"]].to_numpy()
-
     fig = go.Figure(
         go.Pie(
             labels=grp["fase"],
@@ -1202,13 +1203,18 @@ def chart_fase_percentual(df: pd.DataFrame, metrica: str) -> go.Figure:
                 line=dict(color="white", width=2),
             ),
             textinfo="label+percent",
-            customdata=customdata,
+            hovertext=[
+                (
+                    f"Valor de financiamento: US$ {valor}<br>"
+                    f"Quantidade de operações: {qtd}<br>"
+                    f"Quantidade de projetos: {proj}"
+                )
+                for valor, qtd, proj in zip(grp["valor_fmt"], grp["qtd_fmt"], grp["proj_fmt"])
+            ],
             hovertemplate=(
                 "<b>%{label}</b><br>"
-                "Valor de financiamento: US$ %{customdata[0]}<br>"
-                "Quantidade de operações: %{customdata[1]}<br>"
-                "Quantidade de projetos: %{customdata[2]}<br>"
-                "%{percent}<extra></extra>"
+                "%{hovertext}<br>"
+                "Percentual: %{percent}<extra></extra>"
             ),
         )
     )
@@ -2593,29 +2599,43 @@ def update_acomp_fig_tecnico(tab, df_json_ca, *filter_values):
     if df.empty or "nm_tecnico" not in df.columns or "vl_financiamento_dolar" not in df.columns:
         return EMPTY_FIG
 
+    agg_dict = {
+        "val": ("vl_financiamento_dolar", "sum"),
+        "qtd": ("nm_tecnico", "size"),
+        "proj": ("cd_pleito", pd.Series.nunique) if "cd_pleito" in df.columns else ("nm_tecnico", "size"),
+    }
+
     grp = (
-        df.groupby("nm_tecnico", dropna=False)["vl_financiamento_dolar"]
-        .sum()
+        df.groupby("nm_tecnico")
+        .agg(**agg_dict)
         .reset_index()
-        .nlargest(15, "vl_financiamento_dolar")
-        .sort_values("vl_financiamento_dolar")
+        .rename(columns={"nm_tecnico": "tecnico"})
     )
 
     if grp.empty:
         return EMPTY_FIG
 
-    grp.columns = ["tecnico", "val"]
+    grp = grp.nlargest(15, "val").sort_values("val", ascending=False)
+
     grp["val_mi"] = grp["val"] / 1e6
+    grp["val_fmt"] = grp["val_mi"].apply(lambda x: f"{brazil_vlr(x, 0)}M")
+    grp["qtd_fmt"] = grp["qtd"].apply(fmt_int_br)
+    grp["proj_fmt"] = grp["proj"].apply(fmt_int_br)
 
     fig = go.Figure(
         go.Bar(
             x=grp["val_mi"],
             y=grp["tecnico"],
             orientation="h",
-            marker_color=BLUE,
-            marker_line_width=0,
-            customdata=grp["val"].apply(fmt_bi),
-            hovertemplate="<b>%{y}</b><br>%{customdata}<extra></extra>",
+            marker_color=[COLOR_SEQUENCE[i % len(COLOR_SEQUENCE)] for i in range(len(grp))],
+            customdata=list(zip(grp["val_fmt"], grp["qtd_fmt"], grp["proj_fmt"])),
+            hovertemplate=(
+                "<b>%{y}</b><br>"
+                "Valor de financiamento: US$ %{customdata[0]}<br>"
+                "Quantidade de operações: %{customdata[1]}<br>"
+                "Quantidade de projetos: %{customdata[2]}"
+                "<extra></extra>"
+            ),
         )
     )
 
@@ -2628,8 +2648,8 @@ def update_acomp_fig_tecnico(tab, df_json_ca, *filter_values):
             tickformat=",.0f",
             ticksuffix="M",
         ),
-        yaxis=merge_dict(YAXIS_DEF, showgrid=False, automargin=True),
-        margin=dict(t=20, r=70, b=40, l=180),
+        yaxis=merge_dict(YAXIS_DEF, showgrid=False, automargin=True, autorange="reversed"),
+        margin=dict(t=20, r=80, b=40, l=190),
     )
     return fig
 
@@ -2651,37 +2671,55 @@ def update_acomp_fig_cg(tab, df_json_ca, *filter_values):
         return EMPTY_FIG
 
     grp = (
-        df.groupby("nm_cg", dropna=False)["vl_financiamento_dolar"]
-        .sum()
+        df.groupby("nm_cg")
+        .agg(
+            val=("vl_financiamento_dolar", "sum"),
+            valor_fin=("vl_financiamento_dolar", "sum"),
+            qtd=("nm_cg", "size"),
+            proj=("cd_pleito", pd.Series.nunique) if "cd_pleito" in df.columns else ("nm_cg", "size"),
+        )
         .reset_index()
-        .sort_values("vl_financiamento_dolar", ascending=False)
+        .rename(columns={"nm_cg": "cg"})
     )
 
     if grp.empty:
         return EMPTY_FIG
 
-    grp.columns = ["cg", "val"]
+    grp = grp.sort_values("val", ascending=False).copy()
+    grp["valor_fmt"] = (grp["valor_fin"] / 1e6).apply(lambda x: f"{brazil_vlr(x, 0)}M")
+    grp["qtd_fmt"] = grp["qtd"].apply(fmt_int_br)
+    grp["proj_fmt"] = grp["proj"].apply(fmt_int_br)
+
+    customdata = grp[["valor_fmt", "qtd_fmt", "proj_fmt"]].values
 
     fig = go.Figure(
         go.Pie(
             labels=grp["cg"],
             values=grp["val"],
-            hole=0.55,
+            hole=0.62,
+            marker=dict(
+                colors=[COLOR_SEQUENCE[i % len(COLOR_SEQUENCE)] for i in range(len(grp))],
+                line=dict(color="white", width=2),
+            ),
             textinfo="label+percent",
-            textfont=dict(size=11),
-            marker=dict(line=dict(color="white", width=2)),
-            customdata=grp["val"].apply(fmt_bi),
-            hovertemplate="<b>%{label}</b><br>%{customdata}<br>%{percent}<extra></extra>",
+            hovertext=[
+                (
+                    f"Valor de financiamento: US$ {valor}<br>"
+                    f"Quantidade de operações: {qtd}<br>"
+                    f"Quantidade de projetos: {proj}"
+                )
+                for valor, qtd, proj in zip(grp["valor_fmt"], grp["qtd_fmt"], grp["proj_fmt"])
+            ],
+            hovertemplate="<b>%{label}</b><br>%{hovertext}<br>Percentual: %{percent}<extra></extra>",
         )
     )
-
+    
     apply_layout(
         fig,
-        legend=dict(orientation="v", x=1.02, y=0.5, font=dict(size=11)),
         margin=dict(t=20, r=130, b=20, l=20),
+        legend=dict(orientation="v", x=1.02, y=0.5, font=dict(size=11)),
     )
     return fig
-
 
 @callback(
     Output("ca-acomp-fig-fase-tecnico", "figure"),
@@ -2699,37 +2737,90 @@ def update_acomp_fig_fase_tecnico(tab, df_json_ca, *filter_values):
     if df.empty or "nm_tecnico" not in df.columns or "de_fase" not in df.columns:
         return EMPTY_FIG
 
-    top10 = df.groupby("nm_tecnico", dropna=False).size().nlargest(10).index.tolist()
-    df_top = df[df["nm_tecnico"].isin(top10)]
+    top10 = df.groupby("nm_tecnico", dropna=False).size().nlargest(20).index.tolist()
+    df_top = df[df["nm_tecnico"].isin(top10)].copy()
 
     pivot = (
         df_top.groupby(["nm_tecnico", "de_fase"], dropna=False)
-        .size()
-        .reset_index(name="qtd")
+        .agg(
+            qtd=("de_fase", "size"),
+            val=("vl_financiamento_dolar", "sum") if "vl_financiamento_dolar" in df_top.columns else ("de_fase", "size"),
+        )
+        .reset_index()
     )
 
     if pivot.empty:
         return EMPTY_FIG
 
-    fases = pivot["de_fase"].tolist()
-    fases_unicas = list(dict.fromkeys(fases))
+    def quebra_linha(txt: str, limite: int = 14) -> str:
+        txt = str(txt)
+        if len(txt) <= limite:
+            return txt
+        partes = txt.split()
+        linhas = []
+        linha_atual = ""
+        for parte in partes:
+            teste = f"{linha_atual} {parte}".strip()
+            if len(teste) <= limite:
+                linha_atual = teste
+            else:
+                if linha_atual:
+                    linhas.append(linha_atual)
+                linha_atual = parte
+        if linha_atual:
+            linhas.append(linha_atual)
+        return "<br>".join(linhas)
+
+    ordem_tecnicos = (
+        df_top.groupby("nm_tecnico", dropna=False)
+        .size()
+        .sort_values(ascending=False)
+        .index.tolist()
+    )
+
+    pivot["nm_tecnico_label"] = pivot["nm_tecnico"].apply(lambda x: quebra_linha(x, 14))
+    pivot["val_fmt"] = (pivot["val"] / 1e6).apply(lambda x: f"{brazil_vlr(x, 0)}M")
+
+    fases_unicas = list(dict.fromkeys(pivot["de_fase"].tolist()))
 
     fig = go.Figure()
-    for fase in fases_unicas:
-        sub = pivot[pivot["de_fase"] == fase]
+    for i, fase in enumerate(fases_unicas):
+        sub = pivot[pivot["de_fase"] == fase].copy()
+        sub["nm_tecnico"] = pd.Categorical(sub["nm_tecnico"], categories=ordem_tecnicos, ordered=True)
+        sub = sub.sort_values("nm_tecnico")
+
         fig.add_trace(
             go.Bar(
                 name=fase,
-                x=sub["nm_tecnico"],
+                x=sub["nm_tecnico_label"],
                 y=sub["qtd"],
-                marker_color=FASE_COLORS.get(fase, "#94A3B8"),
+                marker_color=COLOR_SEQUENCE[i % len(COLOR_SEQUENCE)],
                 marker_line_width=0,
+                customdata=list(
+                    zip(
+                        sub["nm_tecnico"].astype(str),
+                        sub["de_fase"],
+                        sub["qtd"].apply(fmt_int_br),
+                        sub["val_fmt"],
+                    )
+                ),
+                hovertemplate=(
+                    "<b>Técnico:</b> %{customdata[0]}<br>"
+                    "<b>Fase:</b> %{customdata[1]}<br>"
+                    "<b>Quantidade de operações:</b> %{customdata[2]}<br>"
+                    "<b>Valor de financiamento:</b> US$ %{customdata[3]}"
+                    "<extra></extra>"
+                ),
             )
         )
 
     apply_layout(
         fig,
-        xaxis=merge_dict(XAXIS_DEF, tickangle=-30),
+        xaxis=merge_dict(
+            XAXIS_DEF,
+            tickangle=0,
+            automargin=True,
+        ),
         yaxis=YAXIS_DEF,
         legend=dict(
             orientation="h",
@@ -2739,7 +2830,7 @@ def update_acomp_fig_fase_tecnico(tab, df_json_ca, *filter_values):
             x=1,
             font=dict(size=10),
         ),
-        margin=dict(t=30, r=20, b=90, l=50),
+        margin=dict(t=30, r=20, b=110, l=50),
         barmode="stack",
     )
     return fig
@@ -2763,32 +2854,85 @@ def update_acomp_fig_setor_cg(tab, df_json_ca, *filter_values):
 
     grp = (
         df.groupby(["nm_cg", "nm_setor"], dropna=False)
-        .size()
-        .reset_index(name="qtd")
+        .agg(
+            qtd=("nm_setor", "size"),
+            val=("vl_financiamento_dolar", "sum") if "vl_financiamento_dolar" in df.columns else ("nm_setor", "size"),
+            proj=("cd_pleito", pd.Series.nunique) if "cd_pleito" in df.columns else ("nm_setor", "size"),
+        )
+        .reset_index()
     )
 
     if grp.empty:
         return EMPTY_FIG
 
-    setores = grp["nm_setor"].tolist()
-    setores_unicos = list(dict.fromkeys(setores))
+    ordem_cg = (
+        grp.groupby("nm_cg", dropna=False)["qtd"]
+        .sum()
+        .sort_values(ascending=False)
+        .index.tolist()
+    )
+
+    setores_unicos = (
+        grp.groupby("nm_setor", dropna=False)["qtd"]
+        .sum()
+        .sort_values(ascending=False)
+        .index.tolist()
+    )
 
     fig = go.Figure()
-    for setor in setores_unicos:
-        sub = grp[grp["nm_setor"] == setor]
+    for i, setor in enumerate(setores_unicos):
+        sub = grp[grp["nm_setor"] == setor].copy()
+        sub["nm_cg"] = pd.Categorical(sub["nm_cg"], categories=ordem_cg, ordered=True)
+        sub = sub.sort_values("nm_cg")
+
+        sub["val_fmt"] = (sub["val"] / 1e6).apply(lambda x: f"{brazil_vlr(x, 0)}M")
+        sub["qtd_fmt"] = sub["qtd"].apply(fmt_int_br)
+        sub["proj_fmt"] = sub["proj"].apply(fmt_int_br)
+
         fig.add_trace(
             go.Bar(
                 name=setor,
-                x=sub["nm_cg"],
-                y=sub["qtd"],
+                x=sub["qtd"],
+                y=sub["nm_cg"].astype(str),
+                orientation="h",
+                marker_color=COLOR_SEQUENCE[i % len(COLOR_SEQUENCE)],
                 marker_line_width=0,
+                customdata=list(
+                    zip(
+                        sub["nm_cg"].astype(str),
+                        sub["nm_setor"],
+                        sub["val_fmt"],
+                        sub["qtd_fmt"],
+                        sub["proj_fmt"],
+                    )
+                ),
+                hovertemplate=(
+                    "<b>%{customdata[0]}</b><br>"
+                    "Setor: %{customdata[1]}<br>"
+                    "Valor de financiamento: US$ %{customdata[2]}<br>"
+                    "Quantidade de operações: %{customdata[3]}<br>"
+                    "Quantidade de projetos: %{customdata[4]}"
+                    "<extra></extra>"
+                ),
             )
         )
 
     apply_layout(
         fig,
-        xaxis=merge_dict(XAXIS_DEF, tickangle=-20),
-        yaxis=YAXIS_DEF,
+        xaxis=merge_dict(
+            XAXIS_DEF,
+            showgrid=True,
+            gridcolor="#F1F5F9",
+            dtick=1,
+            title=None,
+            showticklabels=False,
+        ),
+        yaxis=merge_dict(
+            YAXIS_DEF,
+            showgrid=False,
+            automargin=True,
+            autorange="reversed",
+        ),
         legend=dict(
             orientation="h",
             yanchor="bottom",
@@ -2797,7 +2941,7 @@ def update_acomp_fig_setor_cg(tab, df_json_ca, *filter_values):
             x=1,
             font=dict(size=10),
         ),
-        margin=dict(t=30, r=20, b=70, l=50),
+        margin=dict(t=30, r=20, b=40, l=120),
         barmode="stack",
     )
     return fig

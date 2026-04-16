@@ -137,10 +137,10 @@ def _acompanhamento_tab_content(df: pd.DataFrame) -> html.Div:
                 className="metrics-grid",
                 style={"marginBottom": "20px"},
                 children=[
-                    html.Div(id="ca-acomp-kpi-tecnicos",  className="metric-card", style={"borderTopColor": ACCENT}),
-                    html.Div(id="ca-acomp-kpi-ops",        className="metric-card", style={"borderTopColor": BLUE}),
-                    html.Div(id="ca-acomp-kpi-valor",      className="metric-card", style={"borderTopColor": TEAL}),
-                    html.Div(id="ca-acomp-kpi-cgs",        className="metric-card", style={"borderTopColor": VIOLET}),
+                    html.Div(id="ca-acomp-kpi-tecnicos", className="metric-card", style={"borderTopColor": ACCENT}),
+                    html.Div(id="ca-acomp-kpi-ops", className="metric-card", style={"borderTopColor": BLUE}),
+                    html.Div(id="ca-acomp-kpi-valor", className="metric-card", style={"borderTopColor": TEAL}),
+                    html.Div(id="ca-acomp-kpi-cgs", className="metric-card", style={"borderTopColor": VIOLET}),
                 ],
             ),
 
@@ -152,11 +152,12 @@ def _acompanhamento_tab_content(df: pd.DataFrame) -> html.Div:
                         cls="col-2",
                         *[
                             section_head(
-                                "Operações por Técnico",
-                                "Top 15 técnicos com maior volume na carteira filtrada",
+                                "Operações por Analista",
+                                "Top 15 analistas com maior volume na carteira filtrada",
                             ),
                             dcc.Loading(
-                                type="dot", color=ACCENT,
+                                type="dot",
+                                color=ACCENT,
                                 children=[
                                     dcc.Graph(
                                         id="ca-acomp-fig-tecnico",
@@ -175,7 +176,8 @@ def _acompanhamento_tab_content(df: pd.DataFrame) -> html.Div:
                                 "Distribuição das operações por CG",
                             ),
                             dcc.Loading(
-                                type="dot", color=ACCENT,
+                                type="dot",
+                                color=ACCENT,
                                 children=[
                                     dcc.Graph(
                                         id="ca-acomp-fig-cg",
@@ -189,29 +191,37 @@ def _acompanhamento_tab_content(df: pd.DataFrame) -> html.Div:
                 ],
             ),
 
-            # Linha 2 — fase por técnico (stacked) + setor por CG
+            # Linha 2 — fases por técnico em largura total
             html.Div(
                 className="charts-row",
                 children=[
                     glass_card(
-                        cls="col-2",
+                        cls="col-1",
                         *[
                             section_head(
-                                "Distribuição de Fases por Técnico",
-                                "Top 10 técnicos — composição da carteira por fase",
+                                "Distribuição de Fases por Analista",
+                                "Analistas — composição da carteira por fase",
                             ),
                             dcc.Loading(
-                                type="dot", color=ACCENT,
+                                type="dot",
+                                color=ACCENT,
                                 children=[
                                     dcc.Graph(
                                         id="ca-acomp-fig-fase-tecnico",
                                         config={"displayModeBar": False},
-                                        style={"height": "360px"},
+                                        style={"height": "420px"},
                                     )
                                 ],
                             ),
                         ],
                     ),
+                ],
+            ),
+
+            # Linha 3 — setor por coordenação embaixo, largura total
+            html.Div(
+                className="charts-row",
+                children=[
                     glass_card(
                         cls="col-1",
                         *[
@@ -220,12 +230,13 @@ def _acompanhamento_tab_content(df: pd.DataFrame) -> html.Div:
                                 "Distribuição setorial das operações por CG",
                             ),
                             dcc.Loading(
-                                type="dot", color=ACCENT,
+                                type="dot",
+                                color=ACCENT,
                                 children=[
                                     dcc.Graph(
                                         id="ca-acomp-fig-setor-cg",
                                         config={"displayModeBar": False},
-                                        style={"height": "360px"},
+                                        style={"height": "420px"},
                                     )
                                 ],
                             ),
@@ -235,6 +246,7 @@ def _acompanhamento_tab_content(df: pd.DataFrame) -> html.Div:
             ),
         ],
     )
+
 
 
 # ── ABA VALIDADE DA RESOLUÇÃO ─────────────────────────────────────────────────
