@@ -651,7 +651,7 @@ def download_and_prepare_base_df_ca() -> pd.DataFrame:
         file_path=SHAREPOINT_FILE_PATH_CA,
     )
 
-    df = pd.read_excel(BytesIO(raw))
+    df = pd.read_excel(BytesIO(raw), sheet_name='base')
     df = df.copy()
     df.columns = [str(c).strip() for c in df.columns]
     df = date_date(df)
