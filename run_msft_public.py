@@ -2737,8 +2737,37 @@ def update_acomp_fig_fase_tecnico(tab, df_json_ca, *filter_values):
     if df.empty or "nm_tecnico" not in df.columns or "de_fase" not in df.columns:
         return EMPTY_FIG
 
-    top10 = df.groupby("nm_tecnico", dropna=False).size().nlargest(20).index.tolist()
-    df_top = df[df["nm_tecnico"].isin(top10)].copy()
+    # Top técnicos por valor total em carteira
+    if "vl_financiamento_dolar" in df.columns:
+        top_tecnicos = (
+            df.groupby("nm_tecnico", dropna=False)["vl_financiamento_dolar"]
+            .sum()
+            .nlargest(20)
+            .index.tolist()
+        )
+    else:
+        top_tecnicos = (
+            df.groupby("nm_tecnico", dropna=False)
+            .size()
+            .nlargest(20)
+            .index.tolist()
+        )
+
+    df_top = df[df["nm_tecnico"].isin(top_tecnicos)].copy()
+
+    # Agregado total por técnico
+    total_por_tecnico = (
+        df_top.groupby("nm_tecnico", dropna=False)
+        .agg(
+            qtd_total=("de_fase", "size"),
+            val_total=("vl_financiamento_dolar", "sum") if "vl_financiamento_dolar" in df_top.columns else ("de_fase", "size"),
+        )
+        .reset_index()
+    )
+    total_por_tecnico["qtd_total_fmt"] = total_por_tecnico["qtd_total"].apply(fmt_int_br)
+    total_por_tecnico["val_total_fmt"] = (total_por_tecnico["val_total"] / 1e6).apply(
+        lambda x: f"{brazil_vlr(x, 0)}M"
+    )
 
     pivot = (
         df_top.groupby(["nm_tecnico", "de_fase"], dropna=False)
@@ -2747,41 +2776,58 @@ def update_acomp_fig_fase_tecnico(tab, df_json_ca, *filter_values):
             val=("vl_financiamento_dolar", "sum") if "vl_financiamento_dolar" in df_top.columns else ("de_fase", "size"),
         )
         .reset_index()
+        .merge(
+            total_por_tecnico[["nm_tecnico", "qtd_total_fmt", "val_total_fmt"]],
+            on="nm_tecnico",
+            how="left",
+        )
     )
 
     if pivot.empty:
         return EMPTY_FIG
 
-    def quebra_linha(txt: str, limite: int = 14) -> str:
-        txt = str(txt)
-        if len(txt) <= limite:
-            return txt
-        partes = txt.split()
-        linhas = []
-        linha_atual = ""
-        for parte in partes:
-            teste = f"{linha_atual} {parte}".strip()
-            if len(teste) <= limite:
-                linha_atual = teste
-            else:
-                if linha_atual:
-                    linhas.append(linha_atual)
-                linha_atual = parte
-        if linha_atual:
-            linhas.append(linha_atual)
-        return "<br>".join(linhas)
+    def primeiro_ultimo_nome(txt: str) -> str:
+        partes = str(txt).strip().split()
+        if not partes:
+            return str(txt)
+        if len(partes) == 1:
+            return partes[0]
+        return f"{partes[0]}<br>{partes[-1]}"
 
-    ordem_tecnicos = (
-        df_top.groupby("nm_tecnico", dropna=False)
-        .size()
-        .sort_values(ascending=False)
-        .index.tolist()
-    )
+    # Ordem dos técnicos por maior valor total
+    if "vl_financiamento_dolar" in df_top.columns:
+        ordem_tecnicos = (
+            df_top.groupby("nm_tecnico", dropna=False)["vl_financiamento_dolar"]
+            .sum()
+            .sort_values(ascending=False)
+            .index.tolist()
+        )
+    else:
+        ordem_tecnicos = (
+            df_top.groupby("nm_tecnico", dropna=False)
+            .size()
+            .sort_values(ascending=False)
+            .index.tolist()
+        )
 
-    pivot["nm_tecnico_label"] = pivot["nm_tecnico"].apply(lambda x: quebra_linha(x, 14))
+    pivot["nm_tecnico_label"] = pivot["nm_tecnico"].apply(primeiro_ultimo_nome)
     pivot["val_fmt"] = (pivot["val"] / 1e6).apply(lambda x: f"{brazil_vlr(x, 0)}M")
 
-    fases_unicas = list(dict.fromkeys(pivot["de_fase"].tolist()))
+    ordem_fases_desejada = [
+        "Aprovado",
+        "Em negociação",
+        "Negociação concluída",
+        "Em execução",
+        "Repagamento",
+        "Arquivado",
+        "Finalizado",
+    ]
+
+    fases_existentes = pivot["de_fase"].astype(str).tolist()
+    fases_unicas_existentes = list(dict.fromkeys(fases_existentes))
+
+    fases_unicas = [f for f in ordem_fases_desejada if f in fases_unicas_existentes]
+    fases_unicas += [f for f in fases_unicas_existentes if f not in fases_unicas]
 
     fig = go.Figure()
     for i, fase in enumerate(fases_unicas):
@@ -2802,13 +2848,17 @@ def update_acomp_fig_fase_tecnico(tab, df_json_ca, *filter_values):
                         sub["de_fase"],
                         sub["qtd"].apply(fmt_int_br),
                         sub["val_fmt"],
+                        sub["qtd_total_fmt"],
+                        sub["val_total_fmt"],
                     )
                 ),
                 hovertemplate=(
                     "<b>Técnico:</b> %{customdata[0]}<br>"
                     "<b>Fase:</b> %{customdata[1]}<br>"
-                    "<b>Quantidade de operações:</b> %{customdata[2]}<br>"
-                    "<b>Valor de financiamento:</b> US$ %{customdata[3]}"
+                    "<b>Quantidade de operações na fase:</b> %{customdata[2]}<br>"
+                    "<b>Valor de financiamento na fase:</b> US$ %{customdata[3]}<br>"
+                    "<b>Quantidade total de operações do técnico:</b> %{customdata[4]}<br>"
+                    "<b>Valor total em carteira do técnico:</b> US$ %{customdata[5]}"
                     "<extra></extra>"
                 ),
             )
@@ -2834,7 +2884,6 @@ def update_acomp_fig_fase_tecnico(tab, df_json_ca, *filter_values):
         barmode="stack",
     )
     return fig
-
 
 @callback(
     Output("ca-acomp-fig-setor-cg", "figure"),
@@ -2865,15 +2914,17 @@ def update_acomp_fig_setor_cg(tab, df_json_ca, *filter_values):
     if grp.empty:
         return EMPTY_FIG
 
+    # Ordena as CGs pelo maior valor total financiado
     ordem_cg = (
-        grp.groupby("nm_cg", dropna=False)["qtd"]
+        grp.groupby("nm_cg", dropna=False)["val"]
         .sum()
         .sort_values(ascending=False)
         .index.tolist()
     )
 
+    # Ordena os setores pelo maior valor total financiado
     setores_unicos = (
-        grp.groupby("nm_setor", dropna=False)["qtd"]
+        grp.groupby("nm_setor", dropna=False)["val"]
         .sum()
         .sort_values(ascending=False)
         .index.tolist()
@@ -2885,14 +2936,15 @@ def update_acomp_fig_setor_cg(tab, df_json_ca, *filter_values):
         sub["nm_cg"] = pd.Categorical(sub["nm_cg"], categories=ordem_cg, ordered=True)
         sub = sub.sort_values("nm_cg")
 
-        sub["val_fmt"] = (sub["val"] / 1e6).apply(lambda x: f"{brazil_vlr(x, 0)}M")
+        sub["val_mi"] = sub["val"] / 1e6
+        sub["val_fmt"] = sub["val_mi"].apply(lambda x: f"{brazil_vlr(x, 0)}M")
         sub["qtd_fmt"] = sub["qtd"].apply(fmt_int_br)
         sub["proj_fmt"] = sub["proj"].apply(fmt_int_br)
 
         fig.add_trace(
             go.Bar(
                 name=setor,
-                x=sub["qtd"],
+                x=sub["val_mi"],
                 y=sub["nm_cg"].astype(str),
                 orientation="h",
                 marker_color=COLOR_SEQUENCE[i % len(COLOR_SEQUENCE)],
@@ -2923,7 +2975,8 @@ def update_acomp_fig_setor_cg(tab, df_json_ca, *filter_values):
             XAXIS_DEF,
             showgrid=True,
             gridcolor="#F1F5F9",
-            dtick=1,
+            tickformat=",.0f",
+            ticksuffix="M",
             title=None,
             showticklabels=False,
         ),
