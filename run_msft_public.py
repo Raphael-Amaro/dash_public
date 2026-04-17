@@ -641,6 +641,26 @@ def download_and_prepare_base_df() -> pd.DataFrame:
     return df
 
 
+# def download_and_prepare_base_df_ca() -> pd.DataFrame:
+#     access_token = get_access_token_from_session()
+#     client = GraphSharePointClient(access_token=access_token)
+
+#     raw = client.download_excel_from_site(
+#         hostname=SHAREPOINT_HOSTNAME,
+#         site_path=SHAREPOINT_SITE_PATH_CA,
+#         file_path=SHAREPOINT_FILE_PATH_CA,
+#     )
+
+#     df = pd.read_excel(BytesIO(raw), sheet_name='base')
+#     df = df.copy()
+#     df.columns = [str(c).strip() for c in df.columns]
+#     df = date_date(df)
+
+#     df.to_parquet(PARQUET_CACHE_PATH_CA, index=False)
+#     _save_parquet_metadata_ca()
+
+#     return df
+
 def download_and_prepare_base_df_ca() -> pd.DataFrame:
     access_token = get_access_token_from_session()
     client = GraphSharePointClient(access_token=access_token)
@@ -651,10 +671,137 @@ def download_and_prepare_base_df_ca() -> pd.DataFrame:
         file_path=SHAREPOINT_FILE_PATH_CA,
     )
 
-    df = pd.read_excel(BytesIO(raw), sheet_name='base')
+    # Lê tudo como objeto para evitar conversões ruins automáticas
+    df = pd.read_excel(BytesIO(raw), sheet_name="base", dtype=object)
     df = df.copy()
     df.columns = [str(c).strip() for c in df.columns]
-    df = date_date(df)
+
+    date_cols_ca = [
+        "dt_tx_cambio",
+        "dt_primeiro_recebimento",
+        "dt_ultimo_recebimento",
+        "dt_primeira_cofiex",
+        "dt_validade_recomendacao",
+        "dt_reuniao_negociacao",
+        "dt_aprov_diretoria",
+        "dt_aprovacao_senado",
+        "dt_publicacao_dou",
+        "dt_assinatura",
+        "dt_efetividade",
+        "dt_primeiro_desembolso",
+        "dt_ultimo_desembolso_original",
+        "dt_ultimo_desembolso_vigente",
+        "dt_primeira_amortizacao",
+        "dt_ultima_amortizacao",
+        "dt_encerramento",
+    ]
+
+    def parse_ca_date(value):
+        if pd.isna(value):
+            return pd.NaT
+
+        # datetime/date já válidos
+        if isinstance(value, (pd.Timestamp, datetime)):
+            return pd.to_datetime(value, errors="coerce")
+
+        # strings
+        if isinstance(value, str):
+            v = value.strip()
+            if v == "":
+                return pd.NaT
+
+            # evita converter "0" em 1970
+            if v in {"0", "0.0", "00/00/0000", "0000-00-00"}:
+                return pd.NaT
+
+            # tenta padrão brasileiro primeiro
+            dt = pd.to_datetime(v, errors="coerce", dayfirst=True)
+            if pd.notna(dt):
+                return dt
+
+            # fallback
+            return pd.to_datetime(v, errors="coerce")
+
+        # números
+        if isinstance(value, (int, float)):
+            # evita 0 -> 1970-01-01
+            if value in (0, 0.0):
+                return pd.NaT
+
+            # trata serial do Excel
+            if 1 <= float(value) <= 60000:
+                return pd.to_datetime(value, unit="D", origin="1899-12-30", errors="coerce")
+
+            # números fora da faixa não devem virar data
+            return pd.NaT
+
+        return pd.to_datetime(value, errors="coerce")
+
+    for col in date_cols_ca:
+        if col in df.columns:
+            df[col] = df[col].apply(parse_ca_date)
+
+    text_cols = [
+        "cd_pleito",
+        "nu_processo_sei",
+        "nm_cg",
+        "nm_tecnico",
+        "nm_pleito",
+        "sg_pleito",
+        "nm_proponente",
+        "de_tipo_operacao",
+        "de_fase",
+        "de_justificativa_arq",
+        "de_fonte",
+        "sg_fonte",
+        "sg_fonte_resumo",
+        "nm_moeda",
+        "sg_moeda",
+        "symbol_moeda",
+        "de_esfera",
+        "nm_regiao",
+        "nm_uf",
+        "sg_uf",
+        "nm_municipio",
+        "nm_setor",
+        "nm_subsetor",
+        "nm_classificacao",
+        "nu_resolucao_senado",
+        "nu_operacao",
+        "sys",
+        "tp_esfera",
+        "nm_solicitante",
+        "tp_solicitante",
+        "nm_limite",
+    ]
+
+    for col in text_cols:
+        if col in df.columns:
+            df[col] = (
+                df[col]
+                .astype("string")
+                .fillna("Não informado")
+                .replace(["<NA>", "nan", "None"], "Não informado")
+            )
+
+    numeric_cols = [
+        "vl_financiamento_ref",
+        "vl_contrapartida_ref",
+        "tx_cambio",
+        "vl_financiamento_dolar",
+        "vl_contrapartida_dolar",
+        "cd_uf",
+        "cd_municipio",
+        "id_pleito",
+        "qtde_cofiex_resultado",
+        "vl_financiamento_pleito",
+        "vl_contrapartida_pleito",
+        "taxa_cambio_pleito",
+    ]
+
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
     df.to_parquet(PARQUET_CACHE_PATH_CA, index=False)
     _save_parquet_metadata_ca()
